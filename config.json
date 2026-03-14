@@ -1,0 +1,11 @@
+{
+  "gmail_subject_keywords": ["สรุปยอดขายสำหรับคำสั่งซื้อ"],
+  "drive_parent_folder_id": "<FILL_IN_YOUR_GOOGLE_DRIVE_FOLDER_ID>",
+  "classifications": [
+    {"id": 1, "name": "Category 1", "pattern": "CHANGE_ME", "drive_folder_id": ""},
+    {"id": 2, "name": "Category 2", "pattern": "CHANGE_ME", "drive_folder_id": ""},
+    {"id": 3, "name": "Category 3", "pattern": "CHANGE_ME", "drive_folder_id": ""},
+    {"id": 4, "name": "Category 4", "pattern": "CHANGE_ME", "drive_folder_id": ""},
+    {"id": 5, "name": "Others",     "pattern": ".*",         "drive_folder_id": ""}
+  ]
+}
