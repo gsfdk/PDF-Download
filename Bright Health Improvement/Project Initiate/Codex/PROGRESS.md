@@ -8,11 +8,11 @@
 ## Active baton
 
 ```
-NEXT:      Phase A live rollout — restore clasp access, push Apps Script, configure SHEET_ID,
-           run setupSheet_ + runSelfTest_, then verify one real Thai LINE message
-OWNER:     either
-BLOCKERS:  Restore private .clasp.json binding and clasp CLI; Tan must create an empty Google Sheet
-           and add SHEET_ID to Script Properties before runSelfTest_
+NEXT:      Phase A activation — add SHEET_ID in Apps Script Project Settings, run setupSheet_
+           + runSelfTest_ in the editor, then verify one real Thai LINE message
+OWNER:     tan + either
+BLOCKERS:  Tan must add SHEET_ID=1ISFE_GHj1DyNRLBohZHCks5MMn3lSZ2i5zZLbz4Y2N4 in Script Properties
+           and approve the new Sheets OAuth scope when setupSheet_ runs
 UPDATED:   2026-05-30 Asia/Bangkok
 ```
 
@@ -24,6 +24,7 @@ UPDATED:   2026-05-30 Asia/Bangkok
 |---|---|---|---|
 | 2026-05-30 | claude | Drafted SELF-LEARNING-PLAN.md (Phase A + B spec, 8 design principles, architecture diagram, schema, verification). Created Codex/ workspace scaffold (AGENTS.md, PROGRESS.md, SELF-LEARNING-PLAN.md). | codex: implement Phase A — Steps 1–4 of the spec. |
 | 2026-05-30 | codex | Completed local Phase A implementation: Sheets scope, structured capture constants, extraction, locked daily Sheet upsert, context summary support, self-test, capture tail, context injection, and trigger setup. Static parse + manifest checks passed. | either: restore clasp access, configure SHEET_ID, deploy, and run live verification. |
+| 2026-05-30 | codex | Restored private clasp binding, enabled CLI auth, preserved web-app manifest settings, pushed Apps Script, and redeployed the existing LINE webhook deployment in place as version 2. Created `Bright Health Daily Log` and bootstrapped `daily_log` headers. | tan + either: add SHEET_ID, approve Sheets scope, run editor self-test, and verify one LINE message. |
 
 ---
 
@@ -31,7 +32,7 @@ UPDATED:   2026-05-30 Asia/Bangkok
 
 - [x] Bot core: webhook + Gemini + LINE Reply/Push + Google Doc log + rolling history
 - [x] Deployed v1 to Apps Script (May 28 2026)
-- [ ] **CURRENT:** Phase A — local implementation complete; live rollout blocked on clasp access + `SHEET_ID`
+- [ ] **CURRENT:** Phase A — version 2 deployed; activation blocked on owner-authorized `SHEET_ID` + editor self-test
 - [ ] **NEXT:** Phase B — nightly summarizer → `USER_CONTEXT` injection
 - [ ] Weekly progress chart from Sheet → LINE image
 - [ ] Doctor appointment reminders
