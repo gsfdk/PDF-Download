@@ -8,11 +8,11 @@
 ## Active baton
 
 ```
-NEXT:      Phase A activation — add SHEET_ID in Apps Script Project Settings, run setupSheet_
-           + runSelfTest_ in the editor, then verify one real Thai LINE message
-OWNER:     tan + either
-BLOCKERS:  Tan must add SHEET_ID=1ISFE_GHj1DyNRLBohZHCks5MMn3lSZ2i5zZLbz4Y2N4 in Script Properties
-           and approve the new Sheets OAuth scope when setupSheet_ runs
+NEXT:      Phase A verification — rerun public runSelfTest() after Gemini quota retry window,
+           then send one real Thai LINE message and verify the daily_log row
+OWNER:     either
+BLOCKERS:  Gemini extraction returned a transient quota/retry response during runSelfTest() at 20:22
+           Asia/Bangkok. setupSheet() already succeeded; SHEET_ID and Sheets OAuth are configured.
 UPDATED:   2026-05-30 Asia/Bangkok
 ```
 
@@ -26,6 +26,7 @@ UPDATED:   2026-05-30 Asia/Bangkok
 | 2026-05-30 | codex | Completed local Phase A implementation: Sheets scope, structured capture constants, extraction, locked daily Sheet upsert, context summary support, self-test, capture tail, context injection, and trigger setup. Static parse + manifest checks passed. | either: restore clasp access, configure SHEET_ID, deploy, and run live verification. |
 | 2026-05-30 | codex | Restored private clasp binding, enabled CLI auth, preserved web-app manifest settings, pushed Apps Script, and redeployed the existing LINE webhook deployment in place as version 2. Created `Bright Health Daily Log` and bootstrapped `daily_log` headers. | tan + either: add SHEET_ID, approve Sheets scope, run editor self-test, and verify one LINE message. |
 | 2026-05-30 | codex | Added public editor wrappers `setupSheet()` and `runSelfTest()` because Apps Script hides trailing-underscore helper functions from the Run dropdown. Redeployed the existing webhook in place as version 3. | tan + either: add SHEET_ID, refresh editor, run `setupSheet` + `runSelfTest`, and verify one LINE message. |
+| 2026-05-30 | codex | Tan configured `SHEET_ID`, approved Sheets OAuth, and ran public `setupSheet()` successfully. Connector readback confirmed `daily_log!A1:I1` headers. First `runSelfTest()` reached Gemini extraction but failed on a transient Gemini quota/retry response before Sheet upsert assertions. | either: rerun `runSelfTest()` after quota clears; if repeatable, add bounded retry handling for Gemini 429 responses; then verify one real LINE message. |
 
 ---
 
@@ -33,7 +34,7 @@ UPDATED:   2026-05-30 Asia/Bangkok
 
 - [x] Bot core: webhook + Gemini + LINE Reply/Push + Google Doc log + rolling history
 - [x] Deployed v1 to Apps Script (May 28 2026)
-- [ ] **CURRENT:** Phase A — version 2 deployed; activation blocked on owner-authorized `SHEET_ID` + editor self-test
+- [ ] **CURRENT:** Phase A — version 3 deployed and Sheet activated; verification blocked on transient Gemini quota retry
 - [ ] **NEXT:** Phase B — nightly summarizer → `USER_CONTEXT` injection
 - [ ] Weekly progress chart from Sheet → LINE image
 - [ ] Doctor appointment reminders
