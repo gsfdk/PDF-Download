@@ -1,0 +1,3 @@
+# Cat Prompt Generator - No external dependencies required
+# This script uses only Python standard library modules
+# Python 3.6+
