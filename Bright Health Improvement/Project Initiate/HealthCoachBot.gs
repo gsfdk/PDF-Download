@@ -264,6 +264,10 @@ function logToDoc_(direction, text) {
 
 // ─── Structured Health Capture ────────────────────────────────────────────────
 
+function setupSheet() {
+  setupSheet_();
+}
+
 function setupSheet_() {
   const sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
   if (!sheetId) {
@@ -567,6 +571,10 @@ function runSelfTest_() {
       props.setProperty('USER_CONTEXT', previousUserContext);
     }
   }
+}
+
+function runSelfTest() {
+  runSelfTest_();
 }
 
 // ─── Trigger Setup (run once manually) ───────────────────────────────────────

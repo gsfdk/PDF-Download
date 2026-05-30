@@ -25,6 +25,7 @@ UPDATED:   2026-05-30 Asia/Bangkok
 | 2026-05-30 | claude | Drafted SELF-LEARNING-PLAN.md (Phase A + B spec, 8 design principles, architecture diagram, schema, verification). Created Codex/ workspace scaffold (AGENTS.md, PROGRESS.md, SELF-LEARNING-PLAN.md). | codex: implement Phase A — Steps 1–4 of the spec. |
 | 2026-05-30 | codex | Completed local Phase A implementation: Sheets scope, structured capture constants, extraction, locked daily Sheet upsert, context summary support, self-test, capture tail, context injection, and trigger setup. Static parse + manifest checks passed. | either: restore clasp access, configure SHEET_ID, deploy, and run live verification. |
 | 2026-05-30 | codex | Restored private clasp binding, enabled CLI auth, preserved web-app manifest settings, pushed Apps Script, and redeployed the existing LINE webhook deployment in place as version 2. Created `Bright Health Daily Log` and bootstrapped `daily_log` headers. | tan + either: add SHEET_ID, approve Sheets scope, run editor self-test, and verify one LINE message. |
+| 2026-05-30 | codex | Added public editor wrappers `setupSheet()` and `runSelfTest()` because Apps Script hides trailing-underscore helper functions from the Run dropdown. Redeployed the existing webhook in place as version 3. | tan + either: add SHEET_ID, refresh editor, run `setupSheet` + `runSelfTest`, and verify one LINE message. |
 
 ---
 
