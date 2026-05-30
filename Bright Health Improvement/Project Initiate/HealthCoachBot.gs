@@ -21,6 +21,8 @@ const SANITY_BOUNDS = {
 };
 
 const CONTEXT_WINDOW_DAYS = 7;
+const GEMINI_MAX_RETRIES = 1;
+const GEMINI_MAX_RETRY_DELAY_MS = 50000;
 const SOURCE_MSG_MAX_LEN  = 200;
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
@@ -143,10 +145,48 @@ function handleMessage_(userId, replyToken, userText) {
 
 // ─── Gemini API ───────────────────────────────────────────────────────────────
 
-function callGemini_(userText, history) {
-  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  const url    = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
+function parseRetryDelayMs_(responseText) {
+  const retryMatch = String(responseText || '').match(/"retryDelay"\s*:\s*"(\d+)s"/);
+  if (!retryMatch) return 5000;
 
+  const retryMs = Number(retryMatch[1]) * 1000;
+  if (!Number.isFinite(retryMs) || retryMs <= 0) return 5000;
+
+  return Math.min(retryMs, GEMINI_MAX_RETRY_DELAY_MS);
+}
+
+function fetchGeminiResponse_(requestBody, errorPrefix) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
+
+  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
+    const response = UrlFetchApp.fetch(url, {
+      method: 'POST',
+      contentType: 'application/json',
+      payload: JSON.stringify(requestBody),
+      muteHttpExceptions: true
+    });
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (responseCode === 200) {
+      return JSON.parse(responseText);
+    }
+
+    if (responseCode === 429 && attempt < GEMINI_MAX_RETRIES) {
+      const retryDelayMs = parseRetryDelayMs_(responseText);
+      Logger.log(errorPrefix + ' rate limited; retrying in ' + retryDelayMs + 'ms');
+      Utilities.sleep(retryDelayMs);
+      continue;
+    }
+
+    throw new Error(errorPrefix + ' ' + responseCode + ': ' + responseText);
+  }
+
+  throw new Error(errorPrefix + ' exhausted retries');
+}
+
+function callGemini_(userText, history) {
   // Build contents: existing history + new user message
   const contents = history.concat([{ role: 'user', parts: [{ text: userText }] }]);
   const userContext = PropertiesService.getScriptProperties().getProperty('USER_CONTEXT') || '';
@@ -164,18 +204,7 @@ function callGemini_(userText, history) {
     }
   };
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'POST',
-    contentType: 'application/json',
-    payload: JSON.stringify(requestBody),
-    muteHttpExceptions: true
-  });
-
-  if (response.getResponseCode() !== 200) {
-    throw new Error('Gemini API error ' + response.getResponseCode() + ': ' + response.getContentText());
-  }
-
-  const parsed = JSON.parse(response.getContentText());
+  const parsed = fetchGeminiResponse_(requestBody, 'Gemini API error');
   return parsed.candidates[0].content.parts[0].text.trim();
 }
 
@@ -296,37 +325,49 @@ function setupSheet_() {
   return sheet;
 }
 
+function fallbackExtractHealthData_(userText) {
+  const text = String(userText || '');
+  const fallback = {};
+  const findNumber_ = pattern => {
+    const match = text.match(pattern);
+    return match ? Number(match[1]) : null;
+  };
+
+  const weightKg = findNumber_(/(?:น้ำหนัก|หนัก)[^\d]{0,12}(\d+(?:\.\d+)?)/i) ||
+    findNumber_(/(\d+(?:\.\d+)?)\s*(?:kg|กก\.?)/i);
+  const waterGlasses = findNumber_(/(?:ดื่มน้ำ|น้ำ)[^\d]{0,12}(\d+(?:\.\d+)?)\s*แก้ว/i) ||
+    findNumber_(/(\d+(?:\.\d+)?)\s*แก้ว/i);
+  const exerciseMin = findNumber_(/(?:เดิน|วิ่ง|ออกกำลังกาย|ปั่น|ว่ายน้ำ)[^\d]{0,12}(\d+(?:\.\d+)?)\s*(?:นาที|min)/i);
+  const sleepHr = findNumber_(/(?:นอน|หลับ)[^\d]{0,12}(\d+(?:\.\d+)?)\s*(?:ชั่วโมง|ชม\.?|hr)/i);
+  const mood = findNumber_(/(?:อารมณ์|มู้ด)[^\d]{0,12}([1-5])/i);
+
+  if (Number.isFinite(weightKg)) fallback.weight_kg = weightKg;
+  if (Number.isFinite(waterGlasses)) fallback.water_glasses = waterGlasses;
+  if (Number.isFinite(exerciseMin)) fallback.exercise_min = exerciseMin;
+  if (Number.isFinite(sleepHr)) fallback.sleep_hr = sleepHr;
+  if (Number.isFinite(mood)) fallback.mood_1to5 = mood;
+
+  return fallback;
+}
+
 function extractHealthData_(userText) {
+  const prompt = [
+    'ดึงเฉพาะข้อมูลสุขภาพที่ผู้ใช้ระบุจริงจากข้อความด้านล่าง',
+    'ตอบเป็น JSON object เท่านั้น ถ้าไม่มีข้อมูลให้ตอบ {}',
+    'ใช้เฉพาะ key เหล่านี้: weight_kg, water_glasses, exercise_min, sleep_hr, mood_1to5, note',
+    'หน่วย: น้ำหนัก kg, น้ำเป็นจำนวนแก้ว, ออกกำลังกายเป็นนาที, นอนเป็นชั่วโมง, อารมณ์ 1-5',
+    'ห้ามเดา ห้ามคำนวณข้อมูลที่ไม่ได้ระบุ ห้ามใส่ key ที่ไม่มีข้อมูล',
+    'ข้อความผู้ใช้: ' + String(userText || '')
+  ].join('\n');
+
   try {
-    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-    const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
-    const prompt = [
-      'ดึงเฉพาะข้อมูลสุขภาพที่ผู้ใช้ระบุจริงจากข้อความด้านล่าง',
-      'ตอบเป็น JSON object เท่านั้น ถ้าไม่มีข้อมูลให้ตอบ {}',
-      'ใช้เฉพาะ key เหล่านี้: weight_kg, water_glasses, exercise_min, sleep_hr, mood_1to5, note',
-      'หน่วย: น้ำหนัก kg, น้ำเป็นจำนวนแก้ว, ออกกำลังกายเป็นนาที, นอนเป็นชั่วโมง, อารมณ์ 1-5',
-      'ห้ามเดา ห้ามคำนวณข้อมูลที่ไม่ได้ระบุ ห้ามใส่ key ที่ไม่มีข้อมูล',
-      'ข้อความผู้ใช้: ' + String(userText || '')
-    ].join('\n');
-
-    const response = UrlFetchApp.fetch(url, {
-      method: 'POST',
-      contentType: 'application/json',
-      payload: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0,
-          responseMimeType: 'application/json'
-        }
-      }),
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) {
-      throw new Error('Gemini extraction error ' + response.getResponseCode() + ': ' + response.getContentText());
-    }
-
-    const responseBody = JSON.parse(response.getContentText());
+    const responseBody = fetchGeminiResponse_({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: 'application/json'
+      }
+    }, 'Gemini extraction error');
     const extracted = JSON.parse(responseBody.candidates[0].content.parts[0].text);
     const cleaned = {};
 
@@ -351,6 +392,11 @@ function extractHealthData_(userText) {
     return cleaned;
   } catch (err) {
     Logger.log('extractHealthData_ error: ' + err.message);
+    const fallback = fallbackExtractHealthData_(userText);
+    if (Object.keys(fallback).length > 0) {
+      Logger.log('extractHealthData_: using regex fallback');
+      return fallback;
+    }
     return {};
   }
 }
@@ -446,8 +492,6 @@ function summarizeContext_() {
       })
       .join('\t'))
   ].join('\n');
-  const apiKey = props.getProperty('GEMINI_API_KEY');
-  const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
   const prompt = [
     'สรุปพฤติกรรม 7 วันล่าสุดของผู้ใช้เป็นภาษาไทย 3-4 บรรทัด',
     'เน้น: น้ำ ออกกำลังกาย น้ำหนัก แนวโน้ม',
@@ -455,24 +499,13 @@ function summarizeContext_() {
     '',
     tableText
   ].join('\n');
-  const response = UrlFetchApp.fetch(url, {
-    method: 'POST',
-    contentType: 'application/json',
-    payload: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 250
-      }
-    }),
-    muteHttpExceptions: true
-  });
-
-  if (response.getResponseCode() !== 200) {
-    throw new Error('Gemini summary error ' + response.getResponseCode() + ': ' + response.getContentText());
-  }
-
-  const responseBody = JSON.parse(response.getContentText());
+  const responseBody = fetchGeminiResponse_({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 250
+    }
+  }, 'Gemini summary error');
   const summary = responseBody.candidates[0].content.parts[0].text.trim();
   props.setProperty('USER_CONTEXT', summary);
   return summary;
