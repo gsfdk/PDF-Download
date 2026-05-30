@@ -1,0 +1,616 @@
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const GEMINI_MODEL       = 'gemini-2.0-flash';
+const GEMINI_API_BASE    = 'https://generativelanguage.googleapis.com/v1beta/models/';
+const MAX_HISTORY_TURNS  = 8;
+const LINE_REPLY_API_URL = 'https://api.line.me/v2/bot/message/reply';
+const LINE_PUSH_API_URL  = 'https://api.line.me/v2/bot/message/push';
+const SHEET_NAME         = 'daily_log';
+const SHEET_HEADERS      = [
+  'date', 'weight_kg', 'water_glasses', 'exercise_min',
+  'sleep_hr', 'mood_1to5', 'note', 'source_message', 'updated_at'
+];
+
+// Drop any extracted value outside these bounds (hallucination guard).
+const SANITY_BOUNDS = {
+  weight_kg:     [40, 200],
+  water_glasses: [0, 25],
+  exercise_min:  [0, 300],
+  sleep_hr:      [0, 15],
+  mood_1to5:     [1, 5]
+};
+
+const CONTEXT_WINDOW_DAYS = 7;
+const SOURCE_MSG_MAX_LEN  = 200;
+
+// ─── System Prompt ────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `คุณคือโค้ชสุขภาพส่วนตัวที่เป็นเพื่อนสนิท ชื่อ "โค้ชแบงค์"
+คุณดูแลเพื่อนชาย อายุ 33 ปี ที่มีภาวะเมตาบอลิกและสงสัย MASLD (ไขมันพอกตับ)
+
+ข้อมูลสุขภาพปัจจุบัน (ผลเลือดล่าสุด):
+- GGT: 371 (สูงมาก ตับกำลังเครียด)
+- กรดยูริก: 11.0 (สูงมาก เสี่ยงเกาต์และไตเสียหาย)
+- TG (ไตรกลีเซอไรด์): 221 (สูง สัมพันธ์กับน้ำตาล/แป้ง)
+- LDL: 139 (เริ่มสูง)
+- eGFR: 75 (ไตทำงานลดลงเล็กน้อย ต้องระวัง)
+- ไม่ดื่มแอลกอฮอล์ ไม่ใช้สารใดๆ
+
+คันโยก 80/20 ที่สำคัญที่สุด (เรียงลำดับ):
+1. ตัดน้ำตาล/ฟรุกโตส — น้ำอัดลม น้ำผลไม้ ขนมหวาน (ต้นเหตุหลักของ TG สูงและไขมันพอกตับ)
+2. ดื่มน้ำเปล่า 8-10 แก้วต่อวัน (ช่วยไต ช่วยกรดยูริก)
+3. ออกกำลังกาย 30 นาที อย่างน้อย 5 วัน/สัปดาห์ (เดิน วิ่ง ว่ายน้ำ ปั่นจักรยาน)
+4. ควบคุมน้ำหนัก — ลด 5-10% จะเปลี่ยนค่าตับได้ชัดเจน
+
+บทบาทของคุณ:
+- ติดตามพฤติกรรมรายวัน ถามสั้นๆ ว่าวันนี้ดื่มน้ำกี่แก้ว ออกกำลังกายไหม กินอะไรบ้าง
+- ให้กำลังใจเมื่อทำดี บอกทางออกเมื่อสะดุด
+- ส่งข้อความเชิงรุกตอนเช้าเพื่อเริ่มต้นวันให้ดี
+- จำบทสนทนาล่าสุดเพื่อต่อยอด ไม่ถามซ้ำ
+
+กฎที่ต้องปฏิบัติเสมอ (ห้ามฝ่าฝืนทุกกรณี):
+- คุณเป็นโค้ช ไม่ใช่แพทย์ ห้ามวินิจฉัยโรคหรือตีความผลเลือดแทนแพทย์
+- ห้ามแนะนำปรับ ลด หรือหยุดยาที่แพทย์สั่ง
+- ห้ามแนะนำอาหารเสริม วิตามิน สมุนไพร หรือยาใดๆ โดยไม่ผ่านแพทย์
+- ถ้าเพื่อนบอกอาการที่น่าเป็นห่วง (เจ็บหน้าอก หายใจลำบาก ปวดท้องรุนแรง ปัสสาวะผิดปกติ) ให้แนะนำพบแพทย์ทันที
+- อย่าขยายความข้อมูลสุขภาพที่ไม่มีใน system prompt โดยไม่มีหลักฐาน
+
+สไตล์การสื่อสาร:
+- ตอบเป็นภาษาไทยเสมอ
+- ข้อความสั้น กระชับ อ่านง่ายบนมือถือ ไม่เกิน 5-6 ประโยคต่อครั้ง
+- ใช้อีโมจิพอประมาณ (1-3 ตัวต่อข้อความ) อย่าใช้มากเกินไป
+- ห้ามใช้ ## หรือ ** (LINE ไม่แสดง Markdown)
+- พูดเหมือนเพื่อน ไม่ต้องเป็นทางการ แต่ให้ความรู้สึกจริงจังเรื่องสุขภาพ`;
+
+// Morning message templates — one per weekday, no Gemini call needed
+const MORNING_MESSAGES = {
+  0: 'สวัสดีวันอาทิตย์ครับ! 🌅 วันหยุดแบบนี้เหมาะมากเลยนะสำหรับเดินหรือปั่นจักรยาน วันนี้วางแผนอะไรไว้บ้าง?',
+  1: 'สวัสดีวันจันทร์ครับ! 💪 สัปดาห์ใหม่ เริ่มต้นดีๆ ด้วยน้ำ 8 แก้ว ตั้งเป้าวันนี้กันเลย',
+  2: 'อรุณสวัสดิ์ครับ 🌤 เมื่อวานเป็นยังไงบ้าง? วันนี้ออกกำลังกายได้ไหม แม้แค่เดิน 30 นาทีก็ช่วยได้มาก',
+  3: 'สวัสดีตอนเช้าครับ! ☀️ กลางสัปดาห์แล้ว ตรวจสอบน้ำตาลในมื้ออาหารวันนี้ด้วยนะ',
+  4: 'อรุณสวัสดิ์ครับ 🙌 เกือบถึงสุดสัปดาห์แล้ว ดื่มน้ำเปล่าให้ครบ 8 แก้ววันนี้นะ ไตจะขอบคุณมากเลย',
+  5: 'สวัสดีวันศุกร์ครับ! 🎉 ใกล้วันหยุดแล้ว วางแผนออกกำลังกายช่วงวันหยุดไว้บ้างไหม?',
+  6: 'สวัสดีวันเสาร์ครับ! 😊 วันนี้มีเวลาว่าง ลองทำอาหารเองสักมื้อ หลีกเลี่ยงน้ำตาลได้ง่ายกว่าสั่งข้างนอก'
+};
+
+// ─── Webhook Entry Point ──────────────────────────────────────────────────────
+
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents);
+    const props = PropertiesService.getScriptProperties();
+
+    for (const event of body.events) {
+      if (event.type !== 'message' || event.message.type !== 'text') continue;
+      if (!event.replyToken) continue;
+
+      const userId    = event.source.userId;
+      const replyToken = event.replyToken;
+      const userText  = event.message.text;
+
+      // Auto-save userId on first message
+      if (!props.getProperty('LINE_USER_ID')) {
+        props.setProperty('LINE_USER_ID', userId);
+      }
+
+      handleMessage_(userId, replyToken, userText);
+    }
+  } catch (err) {
+    Logger.log('doPost error: ' + err.message);
+  }
+
+  return ContentService.createTextOutput('OK').setMimeType(ContentService.MimeType.TEXT);
+}
+
+// ─── Message Orchestrator ─────────────────────────────────────────────────────
+
+function handleMessage_(userId, replyToken, userText) {
+  logToDoc_('IN', userText);
+
+  let history = getHistory_();
+  let replyText;
+
+  try {
+    replyText = callGemini_(userText, history);
+  } catch (err) {
+    Logger.log('Gemini error: ' + err.message);
+    replyText = 'ขอโทษนะ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะ 🙏';
+  }
+
+  // Update rolling history
+  history.push({ role: 'user',  parts: [{ text: userText }] });
+  history.push({ role: 'model', parts: [{ text: replyText }] });
+
+  // Trim to MAX_HISTORY_TURNS pairs (2 entries per turn)
+  while (history.length > MAX_HISTORY_TURNS * 2) {
+    history.splice(0, 2);
+  }
+
+  saveHistory_(history);
+  replyLine_(replyToken, replyText);
+  logToDoc_('OUT', replyText);
+
+  // Phase A: structured capture (best-effort, never blocks reply)
+  try {
+    const data = extractHealthData_(userText);
+    if (Object.keys(data).length > 0) {
+      logToSheet_(data, userText);
+    }
+  } catch (err) {
+    Logger.log('capture pipeline error: ' + err.message);
+  }
+}
+
+// ─── Gemini API ───────────────────────────────────────────────────────────────
+
+function callGemini_(userText, history) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  const url    = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
+
+  // Build contents: existing history + new user message
+  const contents = history.concat([{ role: 'user', parts: [{ text: userText }] }]);
+  const userContext = PropertiesService.getScriptProperties().getProperty('USER_CONTEXT') || '';
+  const systemText = userContext
+    ? SYSTEM_PROMPT + '\n\nบริบทพฤติกรรม 7 วันล่าสุดของผู้ใช้:\n' + userContext
+    : SYSTEM_PROMPT;
+
+  const requestBody = {
+    systemInstruction: { parts: [{ text: systemText }] },
+    contents: contents,
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 400,
+      topP: 0.9
+    }
+  };
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'POST',
+    contentType: 'application/json',
+    payload: JSON.stringify(requestBody),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error('Gemini API error ' + response.getResponseCode() + ': ' + response.getContentText());
+  }
+
+  const parsed = JSON.parse(response.getContentText());
+  return parsed.candidates[0].content.parts[0].text.trim();
+}
+
+// ─── LINE Messaging ───────────────────────────────────────────────────────────
+
+function replyLine_(replyToken, text) {
+  const token = PropertiesService.getScriptProperties().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+
+  const response = UrlFetchApp.fetch(LINE_REPLY_API_URL, {
+    method: 'POST',
+    contentType: 'application/json',
+    headers: { 'Authorization': 'Bearer ' + token },
+    payload: JSON.stringify({
+      replyToken: replyToken,
+      messages: [{ type: 'text', text: text }]
+    }),
+    muteHttpExceptions: true
+  });
+
+  Logger.log('replyLine status: ' + response.getResponseCode());
+}
+
+function pushLine_(userId, text) {
+  const token = PropertiesService.getScriptProperties().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+
+  const response = UrlFetchApp.fetch(LINE_PUSH_API_URL, {
+    method: 'POST',
+    contentType: 'application/json',
+    headers: { 'Authorization': 'Bearer ' + token },
+    payload: JSON.stringify({
+      to: userId,
+      messages: [{ type: 'text', text: text }]
+    }),
+    muteHttpExceptions: true
+  });
+
+  Logger.log('pushLine status: ' + response.getResponseCode());
+}
+
+// ─── Morning Check-in (cron) ──────────────────────────────────────────────────
+
+function morningCheckin() {
+  const props  = PropertiesService.getScriptProperties();
+  const userId = props.getProperty('LINE_USER_ID');
+
+  if (!userId) {
+    Logger.log('morningCheckin: LINE_USER_ID not set yet, skipping');
+    return;
+  }
+
+  const dayOfWeek = new Date().getDay(); // 0 = Sunday
+  const message   = MORNING_MESSAGES[dayOfWeek];
+
+  pushLine_(userId, message);
+  logToDoc_('OUT (CRON)', message);
+}
+
+// ─── Google Doc Logging ───────────────────────────────────────────────────────
+
+function logToDoc_(direction, text) {
+  try {
+    const props   = PropertiesService.getScriptProperties();
+    const docId   = props.getProperty('LOG_DOC_ID');
+    if (!docId) return;
+
+    const now       = new Date();
+    const timestamp = Utilities.formatDate(now, 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+    const today     = Utilities.formatDate(now, 'Asia/Bangkok', 'yyyy-MM-dd');
+
+    const doc  = DocumentApp.openById(docId);
+    const body = doc.getBody();
+
+    // Add date section header when the date changes
+    const lastDate = props.getProperty('LOG_LAST_DATE');
+    if (lastDate !== today) {
+      body.appendParagraph(''); // spacing
+      body.appendParagraph('=== ' + today + ' ===');
+      props.setProperty('LOG_LAST_DATE', today);
+    }
+
+    body.appendParagraph('[' + timestamp + '] [' + direction + ']: ' + text);
+  } catch (err) {
+    Logger.log('logToDoc_ error: ' + err.message);
+  }
+}
+
+// ─── Structured Health Capture ────────────────────────────────────────────────
+
+function setupSheet_() {
+  const sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!sheetId) {
+    throw new Error('SHEET_ID Script Property is not set');
+  }
+
+  const spreadsheet = SpreadsheetApp.openById(sheetId);
+  let sheet = spreadsheet.getSheetByName(SHEET_NAME);
+
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(SHEET_NAME);
+  }
+
+  const lastColumn = sheet.getLastColumn();
+  const headerWidth = Math.max(lastColumn, SHEET_HEADERS.length);
+  const currentHeaders = sheet.getRange(1, 1, 1, SHEET_HEADERS.length).getValues()[0];
+  const headersMatch = lastColumn === SHEET_HEADERS.length &&
+    SHEET_HEADERS.every((header, index) => currentHeaders[index] === header);
+
+  if (!headersMatch) {
+    sheet.getRange(1, 1, 1, headerWidth).clearContent();
+    sheet.getRange(1, 1, 1, SHEET_HEADERS.length).setValues([SHEET_HEADERS]);
+  }
+
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function extractHealthData_(userText) {
+  try {
+    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
+    const prompt = [
+      'ดึงเฉพาะข้อมูลสุขภาพที่ผู้ใช้ระบุจริงจากข้อความด้านล่าง',
+      'ตอบเป็น JSON object เท่านั้น ถ้าไม่มีข้อมูลให้ตอบ {}',
+      'ใช้เฉพาะ key เหล่านี้: weight_kg, water_glasses, exercise_min, sleep_hr, mood_1to5, note',
+      'หน่วย: น้ำหนัก kg, น้ำเป็นจำนวนแก้ว, ออกกำลังกายเป็นนาที, นอนเป็นชั่วโมง, อารมณ์ 1-5',
+      'ห้ามเดา ห้ามคำนวณข้อมูลที่ไม่ได้ระบุ ห้ามใส่ key ที่ไม่มีข้อมูล',
+      'ข้อความผู้ใช้: ' + String(userText || '')
+    ].join('\n');
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'POST',
+      contentType: 'application/json',
+      payload: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json'
+        }
+      }),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      throw new Error('Gemini extraction error ' + response.getResponseCode() + ': ' + response.getContentText());
+    }
+
+    const responseBody = JSON.parse(response.getContentText());
+    const extracted = JSON.parse(responseBody.candidates[0].content.parts[0].text);
+    const cleaned = {};
+
+    Object.keys(SANITY_BOUNDS).forEach(key => {
+      if (!Object.prototype.hasOwnProperty.call(extracted, key)) return;
+
+      const value = Number(extracted[key]);
+      const bounds = SANITY_BOUNDS[key];
+
+      if (!Number.isFinite(value) || value < bounds[0] || value > bounds[1]) {
+        Logger.log('extractHealthData_: dropped out-of-range ' + key + '=' + extracted[key]);
+        return;
+      }
+
+      cleaned[key] = value;
+    });
+
+    if (typeof extracted.note === 'string' && extracted.note.trim()) {
+      cleaned.note = extracted.note.trim();
+    }
+
+    return cleaned;
+  } catch (err) {
+    Logger.log('extractHealthData_ error: ' + err.message);
+    return {};
+  }
+}
+
+function logToSheet_(data, sourceText) {
+  if (!data || Object.keys(data).length === 0) return;
+
+  const lock = LockService.getScriptLock();
+  let lockAcquired = false;
+
+  try {
+    lock.waitLock(5000);
+    lockAcquired = true;
+
+    const sheet = setupSheet_();
+    const now = new Date();
+    const today = Utilities.formatDate(now, 'Asia/Bangkok', 'yyyy-MM-dd');
+    const lastRow = sheet.getLastRow();
+    const dates = lastRow > 1
+      ? sheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues().map(row => row[0])
+      : [];
+    const existingIndex = dates.indexOf(today);
+    const rowNumber = existingIndex === -1 ? null : existingIndex + 2;
+    const row = rowNumber
+      ? sheet.getRange(rowNumber, 1, 1, SHEET_HEADERS.length).getValues()[0]
+      : new Array(SHEET_HEADERS.length).fill('');
+    const mergeFields = [
+      'weight_kg', 'water_glasses', 'exercise_min',
+      'sleep_hr', 'mood_1to5', 'note'
+    ];
+
+    row[SHEET_HEADERS.indexOf('date')] = today;
+    mergeFields.forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(data, key)) {
+        row[SHEET_HEADERS.indexOf(key)] = data[key];
+      }
+    });
+    row[SHEET_HEADERS.indexOf('source_message')] = String(sourceText || '').slice(0, SOURCE_MSG_MAX_LEN);
+    row[SHEET_HEADERS.indexOf('updated_at')] = now.toISOString();
+
+    if (rowNumber) {
+      sheet.getRange(rowNumber, 1, 1, SHEET_HEADERS.length).setValues([row]);
+    } else {
+      sheet.appendRow(row);
+    }
+  } catch (err) {
+    Logger.log('logToSheet_ error: ' + err.message);
+  } finally {
+    if (lockAcquired) {
+      lock.releaseLock();
+    }
+  }
+}
+
+function summarizeContext_() {
+  const props = PropertiesService.getScriptProperties();
+  const sheet = setupSheet_();
+  const lastRow = sheet.getLastRow();
+  const rows = lastRow > 1
+    ? sheet.getRange(2, 1, lastRow - 1, SHEET_HEADERS.length).getValues()
+    : [];
+  const todayText = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd');
+  const today = new Date(todayText + 'T00:00:00+07:00');
+  const recentRows = rows.filter(row => {
+    const rawDate = row[SHEET_HEADERS.indexOf('date')];
+    const dateText = rawDate instanceof Date
+      ? Utilities.formatDate(rawDate, 'Asia/Bangkok', 'yyyy-MM-dd')
+      : String(rawDate || '').trim();
+    const rowDate = new Date(dateText + 'T00:00:00+07:00');
+    const ageDays = Math.floor((today.getTime() - rowDate.getTime()) / 86400000);
+
+    return Number.isFinite(rowDate.getTime()) && ageDays >= 0 && ageDays < CONTEXT_WINDOW_DAYS;
+  });
+
+  if (recentRows.length === 0) {
+    props.setProperty('USER_CONTEXT', '');
+    return '';
+  }
+
+  const summaryColumns = [
+    'date', 'weight_kg', 'water_glasses', 'exercise_min',
+    'sleep_hr', 'mood_1to5', 'note'
+  ];
+  const tableText = [
+    summaryColumns.join('\t'),
+    ...recentRows.map(row => summaryColumns
+      .map(key => {
+        const value = row[SHEET_HEADERS.indexOf(key)];
+        if (key === 'date' && value instanceof Date) {
+          return Utilities.formatDate(value, 'Asia/Bangkok', 'yyyy-MM-dd');
+        }
+        return value === '' || value === null || typeof value === 'undefined' ? '' : String(value);
+      })
+      .join('\t'))
+  ].join('\n');
+  const apiKey = props.getProperty('GEMINI_API_KEY');
+  const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
+  const prompt = [
+    'สรุปพฤติกรรม 7 วันล่าสุดของผู้ใช้เป็นภาษาไทย 3-4 บรรทัด',
+    'เน้น: น้ำ ออกกำลังกาย น้ำหนัก แนวโน้ม',
+    'ห้ามวินิจฉัยโรค ห้ามแนะนำยา',
+    '',
+    tableText
+  ].join('\n');
+  const response = UrlFetchApp.fetch(url, {
+    method: 'POST',
+    contentType: 'application/json',
+    payload: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 250
+      }
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error('Gemini summary error ' + response.getResponseCode() + ': ' + response.getContentText());
+  }
+
+  const responseBody = JSON.parse(response.getContentText());
+  const summary = responseBody.candidates[0].content.parts[0].text.trim();
+  props.setProperty('USER_CONTEXT', summary);
+  return summary;
+}
+
+function dailyContextUpdate() {
+  try {
+    summarizeContext_();
+  } catch (err) {
+    Logger.log('dailyContextUpdate error: ' + err.message);
+  }
+}
+
+function runSelfTest_() {
+  const sheet = setupSheet_();
+  const props = PropertiesService.getScriptProperties();
+  const previousUserContext = props.getProperty('USER_CONTEXT');
+  const today = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd');
+  const sourceMessageIndex = SHEET_HEADERS.indexOf('source_message');
+  const findTodayRow_ = targetSheet => {
+    const lastRow = targetSheet.getLastRow();
+    if (lastRow < 2) return null;
+
+    const dates = targetSheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues().map(row => row[0]);
+    const index = dates.indexOf(today);
+    return index === -1 ? null : index + 2;
+  };
+  const assert_ = (condition, message) => {
+    if (!condition) throw new Error('runSelfTest_: ' + message);
+    Logger.log('runSelfTest_ PASS: ' + message);
+  };
+  const originalRowNumber = findTodayRow_(sheet);
+  const originalRow = originalRowNumber
+    ? sheet.getRange(originalRowNumber, 1, 1, SHEET_HEADERS.length).getValues()[0]
+    : null;
+
+  try {
+    const currentHeaders = sheet.getRange(1, 1, 1, SHEET_HEADERS.length).getValues()[0];
+    assert_(JSON.stringify(currentHeaders) === JSON.stringify(SHEET_HEADERS), 'headers match');
+
+    const extracted = extractHealthData_('วันนี้ดื่มน้ำ 6 แก้ว เดิน 30 นาที น้ำหนัก 74.5');
+    assert_(extracted.water_glasses === 6, 'water extraction');
+    assert_(extracted.exercise_min === 30, 'exercise extraction');
+    assert_(extracted.weight_kg === 74.5, 'weight extraction');
+
+    const absurd = extractHealthData_('น้ำหนัก 750');
+    assert_(!Object.prototype.hasOwnProperty.call(absurd, 'weight_kg'), 'sanity bound drops absurd weight');
+
+    logToSheet_({ weight_kg: 74.5, water_glasses: 6 }, 'self-test #1');
+    logToSheet_({ sleep_hr: 7 }, 'self-test #2');
+
+    const todayRowNumber = findTodayRow_(sheet);
+    assert_(todayRowNumber !== null, 'today row exists');
+
+    const todayDates = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1)
+      .getDisplayValues()
+      .map(row => row[0])
+      .filter(date => date === today);
+    assert_(todayDates.length === 1, 'same-day logs merge into one row');
+
+    const todayRow = sheet.getRange(todayRowNumber, 1, 1, SHEET_HEADERS.length).getValues()[0];
+    assert_(todayRow[SHEET_HEADERS.indexOf('weight_kg')] === 74.5, 'merged row keeps weight');
+    assert_(todayRow[SHEET_HEADERS.indexOf('water_glasses')] === 6, 'merged row keeps water');
+    assert_(todayRow[SHEET_HEADERS.indexOf('sleep_hr')] === 7, 'merged row adds sleep');
+
+    const summary = summarizeContext_();
+    assert_(typeof summary === 'string' && summary.length > 0, 'summary generated');
+    assert_(props.getProperty('USER_CONTEXT') === summary, 'USER_CONTEXT written');
+  } finally {
+    try {
+      const restoreSheet = setupSheet_();
+      const restoreRowNumber = findTodayRow_(restoreSheet);
+
+      if (restoreRowNumber) {
+        const restoreRow = restoreSheet.getRange(restoreRowNumber, 1, 1, SHEET_HEADERS.length).getValues()[0];
+
+        if (restoreRow[sourceMessageIndex] === 'self-test #2') {
+          if (originalRow) {
+            restoreSheet.getRange(restoreRowNumber, 1, 1, SHEET_HEADERS.length).setValues([originalRow]);
+          } else {
+            restoreSheet.deleteRow(restoreRowNumber);
+          }
+        } else {
+          Logger.log('runSelfTest_: skipped row restore because source_message changed');
+        }
+      } else if (originalRow) {
+        restoreSheet.appendRow(originalRow);
+      }
+    } catch (err) {
+      Logger.log('runSelfTest_ row restore error: ' + err.message);
+    }
+
+    if (previousUserContext === null) {
+      props.deleteProperty('USER_CONTEXT');
+    } else {
+      props.setProperty('USER_CONTEXT', previousUserContext);
+    }
+  }
+}
+
+// ─── Trigger Setup (run once manually) ───────────────────────────────────────
+
+function setupTriggers() {
+  // Remove existing daily triggers to avoid duplicates
+  ScriptApp.getProjectTriggers()
+    .filter(t => ['morningCheckin', 'dailyContextUpdate'].includes(t.getHandlerFunction()))
+    .forEach(t => ScriptApp.deleteTrigger(t));
+
+  // Create daily 7am Bangkok trigger
+  ScriptApp.newTrigger('morningCheckin')
+    .timeBased()
+    .atHour(7)
+    .everyDays(1)
+    .inTimezone('Asia/Bangkok')
+    .create();
+
+  // Create daily 11pm Bangkok context summary trigger
+  ScriptApp.newTrigger('dailyContextUpdate')
+    .timeBased()
+    .atHour(23)
+    .everyDays(1)
+    .inTimezone('Asia/Bangkok')
+    .create();
+
+  Logger.log('setupTriggers: morningCheckin set to 07:00 and dailyContextUpdate set to 23:00 Asia/Bangkok daily');
+}
+
+// ─── History Helpers ──────────────────────────────────────────────────────────
+
+function getHistory_() {
+  const raw = PropertiesService.getScriptProperties().getProperty('HISTORY');
+  if (!raw) return [];
+
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    Logger.log('getHistory_ parse error, resetting: ' + err.message);
+    PropertiesService.getScriptProperties().deleteProperty('HISTORY');
+    return [];
+  }
+}
+
+function saveHistory_(history) {
+  PropertiesService.getScriptProperties().setProperty('HISTORY', JSON.stringify(history));
+}
