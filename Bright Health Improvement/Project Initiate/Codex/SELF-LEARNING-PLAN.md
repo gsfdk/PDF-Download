@@ -290,6 +290,32 @@ Extend the existing cleanup-then-create pattern:
 
 ---
 
+## Phase A.1 amendment — proactive daily check-ins
+
+Approved during the Phase A soak on 2026-05-31. This extends capture behavior without activating Phase B.
+
+### Daily schedule
+- 07:00 Asia/Bangkok: keep the fixed-template morning coaching push; every template ends with one simple question.
+- 20:00 Asia/Bangkok: send one compact Thai prompt asking for water, exercise, sleep, mood, optional weight, and sweets.
+- Around 21:30 Asia/Bangkok: send one gentle reminder only when the user has not replied after that day's evening prompt.
+- Any inbound text after the evening prompt counts as a response. Missing health fields remain valid.
+
+### State and triggers
+- Script Properties: `LAST_EVENING_CHECKIN_DATE`, `LAST_EVENING_CHECKIN_RESPONSE_DATE`, and `LAST_EVENING_REMINDER_DATE`.
+- Record a response before the Gemini call so an AI failure cannot cause an unnecessary reminder.
+- Record a prompt or reminder as sent only after LINE returns a successful HTTP status.
+- During Phase A.1, `setupTriggers()` installs `morningCheckin`, `eveningCheckin`, and `eveningCheckinReminder`; it removes `dailyContextUpdate` and clears `USER_CONTEXT`.
+- Phase B activation must explicitly restore the nightly `dailyContextUpdate` trigger after the soak passes.
+
+### Verification
+1. Run public `runProactiveCheckinSelfTest()` → all reminder state assertions pass without sending LINE messages.
+2. Run `setupTriggers()` → exactly three Phase A.1 triggers exist and no `dailyContextUpdate` trigger remains.
+3. Run `eveningCheckin()` manually → one Thai prompt arrives in LINE.
+4. Reply naturally in Thai → normal coaching reply and merged `daily_log` values.
+5. Run `eveningCheckinReminder()` manually after replying → logs a skip and sends nothing.
+
+---
+
 ## Out of scope (explicit deferrals)
 - Streak detection / week-over-week deltas — derivable later from the Sheet without code changes.
 - Doctor appointment reminders, emergency escalation, Rich Menu — already on the roadmap.

@@ -24,6 +24,13 @@ const CONTEXT_WINDOW_DAYS = 7;
 const GEMINI_MAX_RETRIES = 1;
 const GEMINI_MAX_RETRY_DELAY_MS = 5000;
 const SOURCE_MSG_MAX_LEN  = 200;
+const EVENING_CHECKIN_MESSAGE = 'วันนี้เป็นยังไงบ้างครับ 😊 ดื่มน้ำกี่แก้ว ออกกำลังกายกี่นาที นอนกี่ชั่วโมง อารมณ์ 1-5 เท่าไร? ถ้าชั่งน้ำหนักหรือมีน้ำหวาน/ขนม บอกเพิ่มได้เลยนะ';
+const EVENING_REMINDER_MESSAGE = 'ก่อนพักผ่อน แวะบอกโค้ชสั้นๆ ได้นะครับ 😊 วันนี้ดื่มน้ำกี่แก้ว และได้ขยับร่างกายบ้างไหม?';
+const EVENING_STATE_PROPERTIES = [
+  'LAST_EVENING_CHECKIN_DATE',
+  'LAST_EVENING_CHECKIN_RESPONSE_DATE',
+  'LAST_EVENING_REMINDER_DATE'
+];
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 
@@ -67,12 +74,12 @@ const SYSTEM_PROMPT = `คุณคือโค้ชสุขภาพส่ว
 // Morning message templates — one per weekday, no Gemini call needed
 const MORNING_MESSAGES = {
   0: 'สวัสดีวันอาทิตย์ครับ! 🌅 วันหยุดแบบนี้เหมาะมากเลยนะสำหรับเดินหรือปั่นจักรยาน วันนี้วางแผนอะไรไว้บ้าง?',
-  1: 'สวัสดีวันจันทร์ครับ! 💪 สัปดาห์ใหม่ เริ่มต้นดีๆ ด้วยน้ำ 8 แก้ว ตั้งเป้าวันนี้กันเลย',
+  1: 'สวัสดีวันจันทร์ครับ! 💪 สัปดาห์ใหม่ เริ่มต้นดีๆ ด้วยน้ำ 8 แก้ว วันนี้ตั้งเป้าดื่มน้ำไว้กี่แก้ว?',
   2: 'อรุณสวัสดิ์ครับ 🌤 เมื่อวานเป็นยังไงบ้าง? วันนี้ออกกำลังกายได้ไหม แม้แค่เดิน 30 นาทีก็ช่วยได้มาก',
-  3: 'สวัสดีตอนเช้าครับ! ☀️ กลางสัปดาห์แล้ว ตรวจสอบน้ำตาลในมื้ออาหารวันนี้ด้วยนะ',
-  4: 'อรุณสวัสดิ์ครับ 🙌 เกือบถึงสุดสัปดาห์แล้ว ดื่มน้ำเปล่าให้ครบ 8 แก้ววันนี้นะ ไตจะขอบคุณมากเลย',
+  3: 'สวัสดีตอนเช้าครับ! ☀️ กลางสัปดาห์แล้ว ตรวจสอบน้ำตาลในมื้ออาหารวันนี้ด้วยนะ วันนี้จะเลี่ยงของหวานอะไรได้บ้าง?',
+  4: 'อรุณสวัสดิ์ครับ 🙌 เกือบถึงสุดสัปดาห์แล้ว ดื่มน้ำเปล่าให้ครบ 8 แก้ววันนี้นะ วันนี้จะพกน้ำไว้ใกล้ตัวไหม?',
   5: 'สวัสดีวันศุกร์ครับ! 🎉 ใกล้วันหยุดแล้ว วางแผนออกกำลังกายช่วงวันหยุดไว้บ้างไหม?',
-  6: 'สวัสดีวันเสาร์ครับ! 😊 วันนี้มีเวลาว่าง ลองทำอาหารเองสักมื้อ หลีกเลี่ยงน้ำตาลได้ง่ายกว่าสั่งข้างนอก'
+  6: 'สวัสดีวันเสาร์ครับ! 😊 วันนี้มีเวลาว่าง ลองทำอาหารเองสักมื้อ หลีกเลี่ยงน้ำตาลได้ง่ายกว่าสั่งข้างนอก วันนี้อยากทำเมนูอะไร?'
 };
 
 // ─── Webhook Entry Point ──────────────────────────────────────────────────────
@@ -95,6 +102,7 @@ function doPost(e) {
         props.setProperty('LINE_USER_ID', userId);
       }
 
+      markEveningCheckinResponse_();
       handleMessage_(userId, replyToken, userText);
     }
   } catch (err) {
@@ -320,10 +328,36 @@ function pushLine_(userId, text) {
     muteHttpExceptions: true
   });
 
-  Logger.log('pushLine status: ' + response.getResponseCode());
+  const responseCode = response.getResponseCode();
+  Logger.log('pushLine status: ' + responseCode);
+  return responseCode;
 }
 
-// ─── Morning Check-in (cron) ──────────────────────────────────────────────────
+// ─── Proactive Check-ins (cron) ───────────────────────────────────────────────
+
+function bangkokDate_() {
+  return Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd');
+}
+
+function isSuccessfulHttpStatus_(statusCode) {
+  return statusCode >= 200 && statusCode < 300;
+}
+
+function markEveningCheckinResponse_() {
+  const props = PropertiesService.getScriptProperties();
+  const today = bangkokDate_();
+
+  if (props.getProperty('LAST_EVENING_CHECKIN_DATE') !== today) return;
+
+  props.setProperty('LAST_EVENING_CHECKIN_RESPONSE_DATE', today);
+  Logger.log('markEveningCheckinResponse_: recorded response for ' + today);
+}
+
+function shouldSendEveningReminder_(props, today) {
+  return props.getProperty('LAST_EVENING_CHECKIN_DATE') === today &&
+    props.getProperty('LAST_EVENING_CHECKIN_RESPONSE_DATE') !== today &&
+    props.getProperty('LAST_EVENING_REMINDER_DATE') !== today;
+}
 
 function morningCheckin() {
   const props  = PropertiesService.getScriptProperties();
@@ -337,8 +371,58 @@ function morningCheckin() {
   const dayOfWeek = new Date().getDay(); // 0 = Sunday
   const message   = MORNING_MESSAGES[dayOfWeek];
 
-  pushLine_(userId, message);
-  logToDoc_('OUT (CRON)', message);
+  const responseCode = pushLine_(userId, message);
+  if (isSuccessfulHttpStatus_(responseCode)) {
+    logToDoc_('OUT (CRON)', message);
+  }
+}
+
+function eveningCheckin() {
+  const props = PropertiesService.getScriptProperties();
+  const userId = props.getProperty('LINE_USER_ID');
+  const today = bangkokDate_();
+
+  if (!userId) {
+    Logger.log('eveningCheckin: LINE_USER_ID not set yet, skipping');
+    return;
+  }
+  if (props.getProperty('LAST_EVENING_CHECKIN_DATE') === today) {
+    Logger.log('eveningCheckin: already sent for ' + today + ', skipping');
+    return;
+  }
+
+  const responseCode = pushLine_(userId, EVENING_CHECKIN_MESSAGE);
+  if (!isSuccessfulHttpStatus_(responseCode)) {
+    Logger.log('eveningCheckin: push failed with status ' + responseCode);
+    return;
+  }
+
+  props.setProperty('LAST_EVENING_CHECKIN_DATE', today);
+  logToDoc_('OUT (CRON)', EVENING_CHECKIN_MESSAGE);
+}
+
+function eveningCheckinReminder() {
+  const props = PropertiesService.getScriptProperties();
+  const userId = props.getProperty('LINE_USER_ID');
+  const today = bangkokDate_();
+
+  if (!userId) {
+    Logger.log('eveningCheckinReminder: LINE_USER_ID not set yet, skipping');
+    return;
+  }
+  if (!shouldSendEveningReminder_(props, today)) {
+    Logger.log('eveningCheckinReminder: reminder not needed for ' + today + ', skipping');
+    return;
+  }
+
+  const responseCode = pushLine_(userId, EVENING_REMINDER_MESSAGE);
+  if (!isSuccessfulHttpStatus_(responseCode)) {
+    Logger.log('eveningCheckinReminder: push failed with status ' + responseCode);
+    return;
+  }
+
+  props.setProperty('LAST_EVENING_REMINDER_DATE', today);
+  logToDoc_('OUT (CRON)', EVENING_REMINDER_MESSAGE);
 }
 
 // ─── Google Doc Logging ───────────────────────────────────────────────────────
@@ -758,13 +842,64 @@ function runContextSelfTest() {
   runContextSelfTest_();
 }
 
+function runProactiveCheckinSelfTest() {
+  const props = PropertiesService.getScriptProperties();
+  const today = bangkokDate_();
+  const originalValues = {};
+  const assert_ = (condition, message) => {
+    if (!condition) throw new Error('runProactiveCheckinSelfTest: ' + message);
+    Logger.log('runProactiveCheckinSelfTest PASS: ' + message);
+  };
+
+  EVENING_STATE_PROPERTIES.forEach(key => {
+    originalValues[key] = props.getProperty(key);
+  });
+
+  try {
+    EVENING_STATE_PROPERTIES.forEach(key => props.deleteProperty(key));
+    assert_(!shouldSendEveningReminder_(props, today), 'no reminder before evening check-in');
+
+    props.setProperty('LAST_EVENING_CHECKIN_DATE', today);
+    assert_(shouldSendEveningReminder_(props, today), 'reminder eligible after unanswered check-in');
+
+    markEveningCheckinResponse_();
+    assert_(
+      props.getProperty('LAST_EVENING_CHECKIN_RESPONSE_DATE') === today,
+      'text response recorded for current check-in'
+    );
+    assert_(!shouldSendEveningReminder_(props, today), 'response suppresses reminder');
+
+    props.deleteProperty('LAST_EVENING_CHECKIN_RESPONSE_DATE');
+    props.setProperty('LAST_EVENING_REMINDER_DATE', today);
+    assert_(!shouldSendEveningReminder_(props, today), 'sent reminder is not repeated');
+
+    props.setProperty('LAST_EVENING_CHECKIN_DATE', '2000-01-01');
+    props.deleteProperty('LAST_EVENING_REMINDER_DATE');
+    assert_(!shouldSendEveningReminder_(props, today), 'old check-in does not trigger reminder');
+  } finally {
+    EVENING_STATE_PROPERTIES.forEach(key => {
+      if (originalValues[key] === null) {
+        props.deleteProperty(key);
+      } else {
+        props.setProperty(key, originalValues[key]);
+      }
+    });
+  }
+}
+
 // ─── Trigger Setup (run once manually) ───────────────────────────────────────
 
 function setupTriggers() {
-  // Remove existing daily triggers to avoid duplicates
+  // Remove existing daily triggers to avoid duplicates and keep Phase B dormant.
   ScriptApp.getProjectTriggers()
-    .filter(t => ['morningCheckin', 'dailyContextUpdate'].includes(t.getHandlerFunction()))
+    .filter(t => [
+      'morningCheckin',
+      'eveningCheckin',
+      'eveningCheckinReminder',
+      'dailyContextUpdate'
+    ].includes(t.getHandlerFunction()))
     .forEach(t => ScriptApp.deleteTrigger(t));
+  PropertiesService.getScriptProperties().deleteProperty('USER_CONTEXT');
 
   // Create daily 7am Bangkok trigger
   ScriptApp.newTrigger('morningCheckin')
@@ -774,15 +909,24 @@ function setupTriggers() {
     .inTimezone('Asia/Bangkok')
     .create();
 
-  // Create daily 11pm Bangkok context summary trigger
-  ScriptApp.newTrigger('dailyContextUpdate')
+  // Create daily 8pm Bangkok structured check-in trigger
+  ScriptApp.newTrigger('eveningCheckin')
     .timeBased()
-    .atHour(23)
+    .atHour(20)
     .everyDays(1)
     .inTimezone('Asia/Bangkok')
     .create();
 
-  Logger.log('setupTriggers: morningCheckin set to 07:00 and dailyContextUpdate set to 23:00 Asia/Bangkok daily');
+  // Create daily reminder around 9:30pm Bangkok
+  ScriptApp.newTrigger('eveningCheckinReminder')
+    .timeBased()
+    .atHour(21)
+    .nearMinute(30)
+    .everyDays(1)
+    .inTimezone('Asia/Bangkok')
+    .create();
+
+  Logger.log('setupTriggers: Phase A.1 check-ins set for 07:00, 20:00, and reminder around 21:30 Asia/Bangkok daily');
 }
 
 // ─── History Helpers ──────────────────────────────────────────────────────────
