@@ -8,10 +8,10 @@
 ## Active baton
 
 ```
-NEXT:      Refresh editor, run runProactiveCheckinSelfTest(), run setupTriggers(), then manually run
-           eveningCheckin(), reply in LINE, and confirm eveningCheckinReminder() skips
+NEXT:      Manually run eveningCheckin(), reply in LINE, confirm the Sheet merge, then run
+           eveningCheckinReminder() and confirm it skips
 OWNER:     tan + either
-BLOCKERS:  Tan must run the editor verification functions and send the LINE reply
+BLOCKERS:  Tan must run the live evening prompt/reply/reminder verification
 UPDATED:   2026-05-31 Asia/Bangkok
 ```
 
@@ -33,6 +33,7 @@ UPDATED:   2026-05-31 Asia/Bangkok
 | 2026-05-31 | tan | Ran public `runGeminiSmokeTest()` on version 7 successfully: `model=gemini-2.5-flash-lite response=OK`. | tan + either: send one Thai LINE verification message and confirm a normal reply before starting the Phase A soak. |
 | 2026-05-31 | tan + codex | Completed version 7 live LINE verification: normal Thai coaching reply returned, and connector readback confirmed one merged `daily_log` row with weight `74.5`, water `6`, exercise `30`, and the earlier mood note. | tan: begin the 3–5 day Phase A soak; spot-check captured values before Phase B activation. |
 | 2026-05-31 | codex | Added Phase A.1 proactive capture: morning prompts now end with questions, evening check-in runs at 20:00, one unanswered reminder runs around 21:30, response state is stored in Script Properties, and public `runProactiveCheckinSelfTest()` validates reminder eligibility without LINE sends. Trigger setup now removes the dormant Phase B cron and clears `USER_CONTEXT`. Redeployed the existing webhook in place as version 8. | tan + either: run editor verification, manually exercise the evening prompt/reply/reminder flow, then restart the 3–5 day soak. |
+| 2026-05-31 | tan | Ran `runProactiveCheckinSelfTest()` successfully and ran `setupTriggers()` successfully. Phase A.1 triggers are installed for 07:00, 20:00, and reminder around 21:30 Asia/Bangkok daily. | tan + either: manually run the evening prompt/reply/reminder flow and confirm the Sheet merge before restarting the soak. |
 
 ---
 
