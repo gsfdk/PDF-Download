@@ -8,10 +8,10 @@
 ## Active baton
 
 ```
-NEXT:      Send one Thai LINE message and verify a normal reply on version 7 before starting the
-           3–5 day Phase A soak
-OWNER:     tan + either
-BLOCKERS:  Tan must send the live LINE verification message
+NEXT:      Phase A soak — collect real Thai LINE health logs for 3–5 days and spot-check daily_log;
+           keep Phase B dormant until the captured inputs are trusted
+OWNER:     tan
+BLOCKERS:  none
 UPDATED:   2026-05-31 Asia/Bangkok
 ```
 
@@ -31,6 +31,7 @@ UPDATED:   2026-05-31 Asia/Bangkok
 | 2026-05-31 | codex | Migrated the obsolete `gemini-2.0-flash` target to `gemini-3-flash-preview`. Split editor verification: public `runSelfTest()` now covers Phase A capture only; new public `runContextSelfTest()` covers the dormant Phase B Gemini summary path with row/property cleanup. Redeployed the existing webhook in place as version 6. | either: run `runSelfTest()` on version 6 and verify one real LINE capture; run `runContextSelfTest()` only before Phase B activation. |
 | 2026-05-31 | codex | Confirmed the real LINE webhook and structured Sheet capture work, then replaced preview Gemini with stable `gemini-2.5-flash-lite`. Added bounded 5-second retries, sanitized `LAST_GEMINI_ERROR` diagnostics, shared response validation, and public `runGeminiSmokeTest()`. Redeployed the existing webhook in place as version 7. | tan + either: run `runGeminiSmokeTest()`, send one Thai LINE verification message, then begin the 3–5 day Phase A soak if replies are stable. |
 | 2026-05-31 | tan | Ran public `runGeminiSmokeTest()` on version 7 successfully: `model=gemini-2.5-flash-lite response=OK`. | tan + either: send one Thai LINE verification message and confirm a normal reply before starting the Phase A soak. |
+| 2026-05-31 | tan + codex | Completed version 7 live LINE verification: normal Thai coaching reply returned, and connector readback confirmed one merged `daily_log` row with weight `74.5`, water `6`, exercise `30`, and the earlier mood note. | tan: begin the 3–5 day Phase A soak; spot-check captured values before Phase B activation. |
 
 ---
 
@@ -38,8 +39,8 @@ UPDATED:   2026-05-31 Asia/Bangkok
 
 - [x] Bot core: webhook + Gemini + LINE Reply/Push + Google Doc log + rolling history
 - [x] Deployed v1 to Apps Script (May 28 2026)
-- [ ] **CURRENT:** Phase A — version 7 deployed and Sheet activated; Flash-Lite smoke test passed, waiting on one real LINE verification
-- [ ] **NEXT:** Phase B — nightly summarizer → `USER_CONTEXT` injection
+- [ ] **CURRENT:** Phase A soak — version 7 live-verified; collect and spot-check real Thai LINE health logs for 3–5 days
+- [ ] **NEXT:** Phase B — activate nightly summarizer → `USER_CONTEXT` injection after the soak
 - [ ] Weekly progress chart from Sheet → LINE image
 - [ ] Doctor appointment reminders
 - [ ] Emergency symptom escalation
