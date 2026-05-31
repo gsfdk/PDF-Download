@@ -1,6 +1,6 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const GEMINI_MODEL       = 'gemini-2.0-flash';
+const GEMINI_MODEL       = 'gemini-3-flash-preview';
 const GEMINI_API_BASE    = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const MAX_HISTORY_TURNS  = 8;
 const LINE_REPLY_API_URL = 'https://api.line.me/v2/bot/message/reply';
@@ -525,8 +525,6 @@ function dailyContextUpdate() {
 
 function runSelfTest_() {
   const sheet = setupSheet_();
-  const props = PropertiesService.getScriptProperties();
-  const previousUserContext = props.getProperty('USER_CONTEXT');
   const today = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd');
   const sourceMessageIndex = SHEET_HEADERS.indexOf('source_message');
   const findTodayRow_ = targetSheet => {
@@ -574,10 +572,6 @@ function runSelfTest_() {
     assert_(todayRow[SHEET_HEADERS.indexOf('weight_kg')] === 74.5, 'merged row keeps weight');
     assert_(todayRow[SHEET_HEADERS.indexOf('water_glasses')] === 6, 'merged row keeps water');
     assert_(todayRow[SHEET_HEADERS.indexOf('sleep_hr')] === 7, 'merged row adds sleep');
-
-    const summary = summarizeContext_();
-    assert_(typeof summary === 'string' && summary.length > 0, 'summary generated');
-    assert_(props.getProperty('USER_CONTEXT') === summary, 'USER_CONTEXT written');
   } finally {
     try {
       const restoreSheet = setupSheet_();
@@ -602,6 +596,70 @@ function runSelfTest_() {
       Logger.log('runSelfTest_ row restore error: ' + err.message);
     }
 
+  }
+}
+
+function runSelfTest() {
+  runSelfTest_();
+}
+
+function runContextSelfTest_() {
+  const sheet = setupSheet_();
+  const props = PropertiesService.getScriptProperties();
+  const previousUserContext = props.getProperty('USER_CONTEXT');
+  const today = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd');
+  const sourceMessageIndex = SHEET_HEADERS.indexOf('source_message');
+  const findTodayRow_ = targetSheet => {
+    const lastRow = targetSheet.getLastRow();
+    if (lastRow < 2) return null;
+
+    const dates = targetSheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues().map(row => row[0]);
+    const index = dates.indexOf(today);
+    return index === -1 ? null : index + 2;
+  };
+  const assert_ = (condition, message) => {
+    if (!condition) throw new Error('runContextSelfTest_: ' + message);
+    Logger.log('runContextSelfTest_ PASS: ' + message);
+  };
+  const originalRowNumber = findTodayRow_(sheet);
+  const originalRow = originalRowNumber
+    ? sheet.getRange(originalRowNumber, 1, 1, SHEET_HEADERS.length).getValues()[0]
+    : null;
+
+  try {
+    logToSheet_({
+      weight_kg: 74.5,
+      water_glasses: 6,
+      exercise_min: 30
+    }, 'context-self-test');
+
+    const summary = summarizeContext_();
+    assert_(typeof summary === 'string' && summary.length > 0, 'summary generated');
+    assert_(props.getProperty('USER_CONTEXT') === summary, 'USER_CONTEXT written');
+  } finally {
+    try {
+      const restoreSheet = setupSheet_();
+      const restoreRowNumber = findTodayRow_(restoreSheet);
+
+      if (restoreRowNumber) {
+        const restoreRow = restoreSheet.getRange(restoreRowNumber, 1, 1, SHEET_HEADERS.length).getValues()[0];
+
+        if (restoreRow[sourceMessageIndex] === 'context-self-test') {
+          if (originalRow) {
+            restoreSheet.getRange(restoreRowNumber, 1, 1, SHEET_HEADERS.length).setValues([originalRow]);
+          } else {
+            restoreSheet.deleteRow(restoreRowNumber);
+          }
+        } else {
+          Logger.log('runContextSelfTest_: skipped row restore because source_message changed');
+        }
+      } else if (originalRow) {
+        restoreSheet.appendRow(originalRow);
+      }
+    } catch (err) {
+      Logger.log('runContextSelfTest_ row restore error: ' + err.message);
+    }
+
     if (previousUserContext === null) {
       props.deleteProperty('USER_CONTEXT');
     } else {
@@ -610,8 +668,8 @@ function runSelfTest_() {
   }
 }
 
-function runSelfTest() {
-  runSelfTest_();
+function runContextSelfTest() {
+  runContextSelfTest_();
 }
 
 // ─── Trigger Setup (run once manually) ───────────────────────────────────────
