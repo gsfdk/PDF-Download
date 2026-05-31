@@ -8,10 +8,10 @@
 ## Active baton
 
 ```
-NEXT:      Refresh editor, run public runGeminiSmokeTest(), then send one Thai LINE message and verify
-           a normal reply on version 7 before starting the 3–5 day Phase A soak
+NEXT:      Send one Thai LINE message and verify a normal reply on version 7 before starting the
+           3–5 day Phase A soak
 OWNER:     tan + either
-BLOCKERS:  Tan must run the editor smoke test and send the live LINE verification message
+BLOCKERS:  Tan must send the live LINE verification message
 UPDATED:   2026-05-31 Asia/Bangkok
 ```
 
@@ -30,6 +30,7 @@ UPDATED:   2026-05-31 Asia/Bangkok
 | 2026-05-31 | codex | Fixed the regex fallback to reuse the same `SANITY_BOUNDS` sanitizer as Gemini JSON output after `runSelfTest()` correctly exposed that fallback accepted absurd weight `750`. Redeployed the existing webhook in place as version 5. | either: rerun `runSelfTest()` on version 5, then verify one real LINE message lands in `daily_log`. |
 | 2026-05-31 | codex | Migrated the obsolete `gemini-2.0-flash` target to `gemini-3-flash-preview`. Split editor verification: public `runSelfTest()` now covers Phase A capture only; new public `runContextSelfTest()` covers the dormant Phase B Gemini summary path with row/property cleanup. Redeployed the existing webhook in place as version 6. | either: run `runSelfTest()` on version 6 and verify one real LINE capture; run `runContextSelfTest()` only before Phase B activation. |
 | 2026-05-31 | codex | Confirmed the real LINE webhook and structured Sheet capture work, then replaced preview Gemini with stable `gemini-2.5-flash-lite`. Added bounded 5-second retries, sanitized `LAST_GEMINI_ERROR` diagnostics, shared response validation, and public `runGeminiSmokeTest()`. Redeployed the existing webhook in place as version 7. | tan + either: run `runGeminiSmokeTest()`, send one Thai LINE verification message, then begin the 3–5 day Phase A soak if replies are stable. |
+| 2026-05-31 | tan | Ran public `runGeminiSmokeTest()` on version 7 successfully: `model=gemini-2.5-flash-lite response=OK`. | tan + either: send one Thai LINE verification message and confirm a normal reply before starting the Phase A soak. |
 
 ---
 
@@ -37,7 +38,7 @@ UPDATED:   2026-05-31 Asia/Bangkok
 
 - [x] Bot core: webhook + Gemini + LINE Reply/Push + Google Doc log + rolling history
 - [x] Deployed v1 to Apps Script (May 28 2026)
-- [ ] **CURRENT:** Phase A — version 7 deployed and Sheet activated; waiting on Flash-Lite smoke test + one real LINE verification
+- [ ] **CURRENT:** Phase A — version 7 deployed and Sheet activated; Flash-Lite smoke test passed, waiting on one real LINE verification
 - [ ] **NEXT:** Phase B — nightly summarizer → `USER_CONTEXT` injection
 - [ ] Weekly progress chart from Sheet → LINE image
 - [ ] Doctor appointment reminders
