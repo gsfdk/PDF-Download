@@ -31,6 +31,29 @@ const EVENING_STATE_PROPERTIES = [
   'LAST_EVENING_CHECKIN_RESPONSE_DATE',
   'LAST_EVENING_REMINDER_DATE'
 ];
+const HEALTH_REMINDER_SHEET_NAME = 'health_reminders';
+const HEALTH_REMINDER_HEADERS = [
+  'id', 'category', 'title', 'due_date', 'status', 'source_message',
+  'created_at', 'updated_at', 'sent_7d_at', 'sent_1d_at', 'sent_due_at',
+  'overdue_followup_sent_at', 'completed_at', 'cancelled_at'
+];
+const PENDING_HEALTH_REMINDER_PROPERTY = 'PENDING_HEALTH_REMINDER';
+const PENDING_HEALTH_REMINDER_TTL_MS = 24 * 60 * 60 * 1000;
+const HEALTH_REMINDER_CATEGORIES = ['blood_test', 'doctor_appointment', 'follow_up'];
+const THAI_MONTHS = {
+  'มกราคม': 1,
+  'กุมภาพันธ์': 2,
+  'มีนาคม': 3,
+  'เมษายน': 4,
+  'พฤษภาคม': 5,
+  'มิถุนายน': 6,
+  'กรกฎาคม': 7,
+  'สิงหาคม': 8,
+  'กันยายน': 9,
+  'ตุลาคม': 10,
+  'พฤศจิกายน': 11,
+  'ธันวาคม': 12
+};
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 
@@ -116,6 +139,21 @@ function doPost(e) {
 
 function handleMessage_(userId, replyToken, userText) {
   logToDoc_('IN', userText);
+
+  try {
+    const reminderReply = handleHealthReminderMessage_(userText);
+    if (reminderReply) {
+      replyLine_(replyToken, sanitizeLineText_(reminderReply));
+      logToDoc_('OUT', reminderReply);
+      return;
+    }
+  } catch (err) {
+    Logger.log('health reminder routing error: ' + err.message);
+    const fallbackReply = 'ขอโทษนะ บันทึกรายการเตือนไม่สำเร็จ ลองใหม่อีกครั้งนะครับ 🙏';
+    replyLine_(replyToken, fallbackReply);
+    logToDoc_('OUT', fallbackReply);
+    return;
+  }
 
   let history = getHistory_();
   let replyText;
@@ -388,6 +426,7 @@ function eveningCheckin() {
   const props = PropertiesService.getScriptProperties();
   const userId = props.getProperty('LINE_USER_ID');
   const today = bangkokDate_();
+  let healthReminderFollowup = null;
 
   if (!userId) {
     Logger.log('eveningCheckin: LINE_USER_ID not set yet, skipping');
@@ -398,14 +437,26 @@ function eveningCheckin() {
     return;
   }
 
-  const responseCode = pushLine_(userId, EVENING_CHECKIN_MESSAGE);
+  try {
+    healthReminderFollowup = findEveningHealthReminderFollowup_();
+  } catch (err) {
+    Logger.log('eveningCheckin: health reminder follow-up error: ' + err.message);
+  }
+
+  const message = EVENING_CHECKIN_MESSAGE + buildEveningHealthReminderFollowup_(healthReminderFollowup);
+  const responseCode = pushLine_(userId, message);
   if (!isSuccessfulHttpStatus_(responseCode)) {
     Logger.log('eveningCheckin: push failed with status ' + responseCode);
     return;
   }
 
   props.setProperty('LAST_EVENING_CHECKIN_DATE', today);
-  logToDoc_('OUT (CRON)', EVENING_CHECKIN_MESSAGE);
+  if (healthReminderFollowup) {
+    updateHealthReminder_(healthReminderFollowup.id, {
+      overdue_followup_sent_at: new Date().toISOString()
+    });
+  }
+  logToDoc_('OUT (CRON)', message);
 }
 
 function eveningCheckinReminder() {
@@ -459,6 +510,463 @@ function logToDoc_(direction, text) {
   } catch (err) {
     Logger.log('logToDoc_ error: ' + err.message);
   }
+}
+
+// ─── Health Reminders ────────────────────────────────────────────────────────
+
+function setupHealthReminders() {
+  setupHealthReminderSheet_();
+}
+
+function setupHealthReminderSheet_() {
+  const sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!sheetId) {
+    throw new Error('SHEET_ID Script Property is not set');
+  }
+
+  const spreadsheet = SpreadsheetApp.openById(sheetId);
+  let sheet = spreadsheet.getSheetByName(HEALTH_REMINDER_SHEET_NAME);
+
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(HEALTH_REMINDER_SHEET_NAME);
+  }
+
+  const lastColumn = sheet.getLastColumn();
+  const headerWidth = Math.max(lastColumn, HEALTH_REMINDER_HEADERS.length);
+  const currentHeaders = sheet.getRange(1, 1, 1, HEALTH_REMINDER_HEADERS.length).getValues()[0];
+  const headersMatch = lastColumn === HEALTH_REMINDER_HEADERS.length &&
+    HEALTH_REMINDER_HEADERS.every((header, index) => currentHeaders[index] === header);
+
+  if (!headersMatch) {
+    sheet.getRange(1, 1, 1, headerWidth).clearContent();
+    sheet.getRange(1, 1, 1, HEALTH_REMINDER_HEADERS.length).setValues([HEALTH_REMINDER_HEADERS]);
+  }
+
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function normalizeHealthReminderDate_(year, month, day) {
+  let normalizedYear = Number(year);
+  const normalizedMonth = Number(month);
+  const normalizedDay = Number(day);
+
+  if (normalizedYear >= 2400) normalizedYear -= 543;
+  if (!Number.isInteger(normalizedYear) ||
+      !Number.isInteger(normalizedMonth) ||
+      !Number.isInteger(normalizedDay)) {
+    return null;
+  }
+
+  const date = new Date(Date.UTC(normalizedYear, normalizedMonth - 1, normalizedDay));
+  if (date.getUTCFullYear() !== normalizedYear ||
+      date.getUTCMonth() !== normalizedMonth - 1 ||
+      date.getUTCDate() !== normalizedDay) {
+    return null;
+  }
+
+  return [
+    String(normalizedYear).padStart(4, '0'),
+    String(normalizedMonth).padStart(2, '0'),
+    String(normalizedDay).padStart(2, '0')
+  ].join('-');
+}
+
+function parseHealthReminderDate_(text) {
+  const source = String(text || '').trim();
+  const isoMatch = source.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (isoMatch) {
+    return normalizeHealthReminderDate_(isoMatch[1], isoMatch[2], isoMatch[3]);
+  }
+
+  const thaiMonthNames = Object.keys(THAI_MONTHS).join('|');
+  const thaiMatch = source.match(new RegExp('(\\d{1,2})\\s*(' + thaiMonthNames + ')\\s*(\\d{4})'));
+  if (!thaiMatch) return null;
+
+  return normalizeHealthReminderDate_(thaiMatch[3], THAI_MONTHS[thaiMatch[2]], thaiMatch[1]);
+}
+
+function looksLikeHealthReminderDate_(text) {
+  const source = String(text || '');
+  return /\b\d{4}-\d{1,2}-\d{1,2}\b/.test(source) ||
+    new RegExp('\\d{1,2}\\s*(?:' + Object.keys(THAI_MONTHS).join('|') + ')\\s*\\d{4}').test(source);
+}
+
+function healthReminderDateToDate_(dateText) {
+  return new Date(String(dateText || '') + 'T00:00:00+07:00');
+}
+
+function healthReminderDaysUntil_(dueDate, today) {
+  return Math.round(
+    (healthReminderDateToDate_(dueDate).getTime() - healthReminderDateToDate_(today).getTime()) /
+    86400000
+  );
+}
+
+function addDaysToHealthReminderDate_(dateText, days) {
+  const date = healthReminderDateToDate_(dateText);
+  date.setDate(date.getDate() + Number(days));
+  return Utilities.formatDate(date, 'Asia/Bangkok', 'yyyy-MM-dd');
+}
+
+function isAllowedHealthReminderDate_(dueDate, today) {
+  return Boolean(dueDate) &&
+    Number.isFinite(healthReminderDateToDate_(dueDate).getTime()) &&
+    healthReminderDaysUntil_(dueDate, today) >= 0;
+}
+
+function inferHealthReminderCategory_(text) {
+  const source = String(text || '');
+  if (/(ตรวจเลือด|blood\s*test)/i.test(source)) return 'blood_test';
+  if (/(หมอ|แพทย์|doctor|appointment)/i.test(source)) return 'doctor_appointment';
+  return 'follow_up';
+}
+
+function defaultHealthReminderTitle_(category) {
+  if (category === 'blood_test') return 'ตรวจเลือดติดตามผล';
+  if (category === 'doctor_appointment') return 'นัดพบแพทย์';
+  return 'ติดตามสุขภาพ';
+}
+
+function isHealthReminderRequest_(text) {
+  const source = String(text || '');
+  const hasHealthTopic = /(ตรวจเลือด|ตรวจสุขภาพ|ติดตามผล|follow[\s-]?up|หมอ|แพทย์|doctor|appointment)/i.test(source);
+  const hasReminderIntent = /(เตือน|นัด|จะไป|ต้องไป|อีก\s*\d+\s*(?:วัน|สัปดาห์|เดือน)|remind)/i.test(source);
+
+  return hasHealthTopic && hasReminderIntent;
+}
+
+function fallbackExtractHealthReminderIntent_(text) {
+  const category = inferHealthReminderCategory_(text);
+  return {
+    category: category,
+    title: defaultHealthReminderTitle_(category)
+  };
+}
+
+function extractHealthReminderIntent_(text) {
+  const fallback = fallbackExtractHealthReminderIntent_(text);
+  const prompt = [
+    'ดึงข้อมูลการเตือนเรื่องสุขภาพจากข้อความด้านล่าง',
+    'ตอบเป็น JSON object เท่านั้น',
+    'ใช้เฉพาะ key: category, title',
+    'category ต้องเป็น blood_test, doctor_appointment หรือ follow_up เท่านั้น',
+    'title เป็นคำอธิบายภาษาไทยสั้นๆ ห้ามใส่คำแนะนำทางการแพทย์',
+    'ข้อความผู้ใช้: ' + String(text || '')
+  ].join('\n');
+
+  try {
+    const responseBody = fetchGeminiResponse_({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: 'application/json'
+      }
+    }, 'Gemini reminder extraction error');
+    const extracted = JSON.parse(readGeminiText_(responseBody, 'Gemini reminder extraction error'));
+    const category = HEALTH_REMINDER_CATEGORIES.includes(extracted.category)
+      ? extracted.category
+      : fallback.category;
+    const title = typeof extracted.title === 'string' && extracted.title.trim()
+      ? extracted.title.trim().slice(0, 120)
+      : defaultHealthReminderTitle_(category);
+
+    return { category: category, title: title };
+  } catch (err) {
+    Logger.log('extractHealthReminderIntent_ error: ' + err.message);
+    return fallback;
+  }
+}
+
+function savePendingHealthReminder_(intent, sourceText) {
+  const pending = {
+    category: intent.category,
+    title: intent.title,
+    source_message: String(sourceText || '').slice(0, SOURCE_MSG_MAX_LEN),
+    expires_at: new Date(Date.now() + PENDING_HEALTH_REMINDER_TTL_MS).toISOString()
+  };
+
+  PropertiesService.getScriptProperties()
+    .setProperty(PENDING_HEALTH_REMINDER_PROPERTY, JSON.stringify(pending));
+}
+
+function loadPendingHealthReminder_() {
+  const props = PropertiesService.getScriptProperties();
+  const raw = props.getProperty(PENDING_HEALTH_REMINDER_PROPERTY);
+  if (!raw) return null;
+
+  try {
+    const pending = JSON.parse(raw);
+    if (!pending.expires_at || new Date(pending.expires_at).getTime() <= Date.now()) {
+      props.deleteProperty(PENDING_HEALTH_REMINDER_PROPERTY);
+      return null;
+    }
+    return pending;
+  } catch (err) {
+    props.deleteProperty(PENDING_HEALTH_REMINDER_PROPERTY);
+    return null;
+  }
+}
+
+function nextHealthReminderId_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 'HR-0001';
+
+  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues().map(row => row[0]);
+  const maxId = ids.reduce((max, id) => {
+    const match = String(id || '').match(/^HR-(\d+)$/i);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+
+  return 'HR-' + String(maxId + 1).padStart(4, '0');
+}
+
+function rowToHealthReminder_(row, rowNumber) {
+  const reminder = { row_number: rowNumber };
+  HEALTH_REMINDER_HEADERS.forEach((header, index) => {
+    if (row[index] instanceof Date) {
+      reminder[header] = header === 'due_date'
+        ? Utilities.formatDate(row[index], 'Asia/Bangkok', 'yyyy-MM-dd')
+        : row[index].toISOString();
+    } else {
+      reminder[header] = String(row[index] || '');
+    }
+  });
+  return reminder;
+}
+
+function readHealthReminders_() {
+  const sheet = setupHealthReminderSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  return sheet.getRange(2, 1, lastRow - 1, HEALTH_REMINDER_HEADERS.length)
+    .getValues()
+    .map((row, index) => rowToHealthReminder_(row, index + 2));
+}
+
+function createHealthReminder_(intent, dueDate, sourceText) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    const sheet = setupHealthReminderSheet_();
+    const now = new Date().toISOString();
+    const reminder = {
+      id: nextHealthReminderId_(sheet),
+      category: intent.category,
+      title: intent.title,
+      due_date: dueDate,
+      status: 'active',
+      source_message: String(sourceText || '').slice(0, SOURCE_MSG_MAX_LEN),
+      created_at: now,
+      updated_at: now,
+      sent_7d_at: '',
+      sent_1d_at: '',
+      sent_due_at: '',
+      overdue_followup_sent_at: '',
+      completed_at: '',
+      cancelled_at: ''
+    };
+
+    sheet.appendRow(HEALTH_REMINDER_HEADERS.map(header => reminder[header]));
+    return reminder;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updateHealthReminder_(id, changes) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    const sheet = setupHealthReminderSheet_();
+    const reminders = readHealthReminders_();
+    const reminder = reminders.find(item => item.id.toUpperCase() === String(id || '').toUpperCase());
+    if (!reminder) return null;
+
+    Object.keys(changes).forEach(key => {
+      if (HEALTH_REMINDER_HEADERS.includes(key)) reminder[key] = changes[key];
+    });
+    reminder.updated_at = new Date().toISOString();
+    sheet.getRange(reminder.row_number, 1, 1, HEALTH_REMINDER_HEADERS.length)
+      .setValues([HEALTH_REMINDER_HEADERS.map(header => reminder[header])]);
+    return reminder;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function listActiveHealthReminders_() {
+  return readHealthReminders_()
+    .filter(reminder => reminder.status === 'active')
+    .sort((a, b) => a.due_date.localeCompare(b.due_date));
+}
+
+function formatHealthReminderConfirmation_(reminder) {
+  return [
+    'บันทึกรายการเตือนแล้วครับ ✅',
+    reminder.id + ': ' + reminder.title,
+    'วันที่ ' + reminder.due_date,
+    'จะแจ้งเตือนล่วงหน้า 7 วัน, 1 วัน และวันครบกำหนด'
+  ].join('\n');
+}
+
+function formatHealthReminderList_() {
+  const reminders = listActiveHealthReminders_();
+  if (reminders.length === 0) return 'ตอนนี้ยังไม่มีรายการเตือนสุขภาพครับ';
+
+  return [
+    'รายการเตือนสุขภาพ:',
+    ...reminders.slice(0, 10).map(reminder =>
+      reminder.id + ' | ' + reminder.due_date + ' | ' + reminder.title
+    ),
+    reminders.length > 10 ? 'และอีก ' + (reminders.length - 10) + ' รายการ' : ''
+  ].filter(Boolean).join('\n');
+}
+
+function handleHealthReminderMessage_(userText) {
+  const text = String(userText || '').trim();
+  const props = PropertiesService.getScriptProperties();
+  const pending = loadPendingHealthReminder_();
+  const today = bangkokDate_();
+  let match;
+
+  if (/^(ดูรายการเตือน|รายการเตือน|ดูนัดสุขภาพ)$/i.test(text)) {
+    return formatHealthReminderList_();
+  }
+
+  match = text.match(/^(?:ยกเลิกการเตือน|ยกเลิกเตือน)\s*(HR-\d+)$/i);
+  if (match) {
+    const reminder = updateHealthReminder_(match[1], {
+      status: 'cancelled',
+      cancelled_at: new Date().toISOString()
+    });
+    return reminder
+      ? 'ยกเลิกรายการ ' + reminder.id + ' แล้วครับ'
+      : 'ไม่พบรายการเตือน ' + match[1].toUpperCase() + ' ครับ';
+  }
+
+  match = text.match(/^(?:ทำรายการ\s*)?(HR-\d+)\s*เสร็จแล้ว$/i);
+  if (!match) {
+    match = text.match(/^ทำรายการ\s*(HR-\d+)\s*เสร็จแล้ว$/i);
+  }
+  if (match) {
+    const reminder = updateHealthReminder_(match[1], {
+      status: 'completed',
+      completed_at: new Date().toISOString()
+    });
+    return reminder
+      ? 'รับทราบครับ ✅ ทำเครื่องหมาย ' + reminder.id + ' ว่าเสร็จแล้ว'
+      : 'ไม่พบรายการเตือน ' + match[1].toUpperCase() + ' ครับ';
+  }
+
+  if (pending && /^(ยกเลิก|ไม่ต้องเตือน)$/i.test(text)) {
+    props.deleteProperty(PENDING_HEALTH_REMINDER_PROPERTY);
+    return 'ยกเลิกการเพิ่มรายการเตือนแล้วครับ';
+  }
+
+  if (pending) {
+    const pendingDueDate = parseHealthReminderDate_(text);
+    if (pendingDueDate) {
+      if (!isAllowedHealthReminderDate_(pendingDueDate, today)) {
+        return 'วันที่ต้องไม่เป็นอดีตนะครับ กรุณาส่งวันที่ใหม่ เช่น 2026-08-31';
+      }
+
+      props.deleteProperty(PENDING_HEALTH_REMINDER_PROPERTY);
+      return formatHealthReminderConfirmation_(
+        createHealthReminder_(pending, pendingDueDate, pending.source_message)
+      );
+    }
+    if (looksLikeHealthReminderDate_(text)) {
+      return 'รูปแบบวันที่ไม่ถูกต้องครับ กรุณาส่งใหม่ เช่น 2026-08-31 หรือ 31 สิงหาคม 2026';
+    }
+  }
+
+  if (!isHealthReminderRequest_(text)) return null;
+
+  const intent = extractHealthReminderIntent_(text);
+  const dueDate = parseHealthReminderDate_(text);
+  if (!dueDate) {
+    savePendingHealthReminder_(intent, text);
+    return 'ได้ครับ กรุณาบอกวันที่แน่นอนก่อนนะ เช่น 2026-08-31 หรือ 31 สิงหาคม 2026';
+  }
+  if (!isAllowedHealthReminderDate_(dueDate, today)) {
+    return 'วันที่ต้องไม่เป็นอดีตนะครับ กรุณาส่งวันที่ใหม่ เช่น 2026-08-31';
+  }
+
+  return formatHealthReminderConfirmation_(createHealthReminder_(intent, dueDate, text));
+}
+
+function getHealthReminderNotificationField_(reminder, today) {
+  if (reminder.status !== 'active') return null;
+
+  const daysUntil = healthReminderDaysUntil_(reminder.due_date, today);
+  if (daysUntil === 7 && !reminder.sent_7d_at) return 'sent_7d_at';
+  if (daysUntil === 1 && !reminder.sent_1d_at) return 'sent_1d_at';
+  if (daysUntil === 0 && !reminder.sent_due_at) return 'sent_due_at';
+  return null;
+}
+
+function buildHealthReminderPushText_(reminder, notificationField) {
+  if (notificationField === 'sent_7d_at') {
+    return 'แจ้งเตือนสุขภาพ 📅 อีก 7 วัน: ' + reminder.title + ' (' + reminder.id + ')';
+  }
+  if (notificationField === 'sent_1d_at') {
+    return 'แจ้งเตือนสุขภาพ 📅 พรุ่งนี้: ' + reminder.title + ' (' + reminder.id + ')';
+  }
+  return [
+    'ถึงกำหนดแล้วครับ 📅 ' + reminder.title + ' (' + reminder.id + ')',
+    'ถ้าทำเสร็จแล้ว พิมพ์ "ทำรายการ ' + reminder.id + ' เสร็จแล้ว" ได้เลยนะ'
+  ].join('\n');
+}
+
+function healthReminderScan() {
+  try {
+    const userId = PropertiesService.getScriptProperties().getProperty('LINE_USER_ID');
+    if (!userId) {
+      Logger.log('healthReminderScan: LINE_USER_ID not set yet, skipping');
+      return;
+    }
+
+    const today = bangkokDate_();
+    listActiveHealthReminders_().forEach(reminder => {
+      const notificationField = getHealthReminderNotificationField_(reminder, today);
+      if (!notificationField) return;
+
+      const message = buildHealthReminderPushText_(reminder, notificationField);
+      const responseCode = pushLine_(userId, message);
+      if (!isSuccessfulHttpStatus_(responseCode)) return;
+
+      updateHealthReminder_(reminder.id, { [notificationField]: new Date().toISOString() });
+      logToDoc_('OUT (CRON)', message);
+    });
+  } catch (err) {
+    Logger.log('healthReminderScan error: ' + err.message);
+  }
+}
+
+function findEveningHealthReminderFollowup_() {
+  const today = bangkokDate_();
+  return listActiveHealthReminders_()
+    .find(reminder => isEveningHealthReminderFollowupEligible_(reminder, today)) || null;
+}
+
+function isEveningHealthReminderFollowupEligible_(reminder, today) {
+  return reminder.status === 'active' &&
+    healthReminderDaysUntil_(reminder.due_date, today) <= 0 &&
+    Boolean(reminder.sent_due_at) &&
+    !reminder.overdue_followup_sent_at;
+}
+
+function buildEveningHealthReminderFollowup_(reminder) {
+  if (!reminder) return '';
+  return [
+    '',
+    'อีกเรื่อง: ' + reminder.title + ' (' + reminder.id + ') ถึงกำหนดแล้ว',
+    'ถ้าทำเสร็จ พิมพ์ "ทำรายการ ' + reminder.id + ' เสร็จแล้ว" ได้เลยครับ'
+  ].join('\n');
 }
 
 // ─── Structured Health Capture ────────────────────────────────────────────────
@@ -894,6 +1402,106 @@ function runProactiveCheckinSelfTest() {
   }
 }
 
+function runHealthReminderSelfTest() {
+  const props = PropertiesService.getScriptProperties();
+  const previousPending = props.getProperty(PENDING_HEALTH_REMINDER_PROPERTY);
+  const fixtureSource = 'health-reminder-self-test';
+  const today = bangkokDate_();
+  const assert_ = (condition, message) => {
+    if (!condition) throw new Error('runHealthReminderSelfTest: ' + message);
+    Logger.log('runHealthReminderSelfTest PASS: ' + message);
+  };
+  const deleteFixtures_ = () => {
+    const sheet = setupHealthReminderSheet_();
+    const sourceIndex = HEALTH_REMINDER_HEADERS.indexOf('source_message') + 1;
+
+    for (let rowNumber = sheet.getLastRow(); rowNumber >= 2; rowNumber--) {
+      if (sheet.getRange(rowNumber, sourceIndex).getDisplayValue() === fixtureSource) {
+        sheet.deleteRow(rowNumber);
+      }
+    }
+  };
+
+  try {
+    deleteFixtures_();
+    const sheet = setupHealthReminderSheet_();
+    const currentHeaders = sheet.getRange(1, 1, 1, HEALTH_REMINDER_HEADERS.length).getValues()[0];
+    assert_(
+      JSON.stringify(currentHeaders) === JSON.stringify(HEALTH_REMINDER_HEADERS),
+      'health_reminders headers match'
+    );
+
+    assert_(parseHealthReminderDate_('2026-08-31') === '2026-08-31', 'ISO date normalized');
+    assert_(parseHealthReminderDate_('31 สิงหาคม 2026') === '2026-08-31', 'Thai Gregorian date normalized');
+    assert_(parseHealthReminderDate_('31 สิงหาคม 2569') === '2026-08-31', 'Thai Buddhist date normalized');
+    assert_(parseHealthReminderDate_('2026-02-30') === null, 'invalid date rejected');
+    assert_(!isAllowedHealthReminderDate_('2000-01-01', today), 'past date rejected');
+    assert_(isHealthReminderRequest_('อีก 3 เดือนจะไปตรวจเลือด'), 'natural Thai reminder request recognized');
+
+    savePendingHealthReminder_({ category: 'blood_test', title: 'ตรวจเลือดติดตามผล' }, fixtureSource);
+    assert_(loadPendingHealthReminder_().category === 'blood_test', 'relative-date pending state stored');
+    assert_(
+      handleHealthReminderMessage_('2026-02-30').includes('รูปแบบวันที่ไม่ถูกต้อง'),
+      'invalid pending date asks for correction'
+    );
+    assert_(
+      handleHealthReminderMessage_(addDaysToHealthReminderDate_(today, 30)).includes('บันทึกรายการเตือนแล้ว'),
+      'pending reminder saved after exact date'
+    );
+
+    const reminder7d = createHealthReminder_(
+      { category: 'blood_test', title: 'ตรวจเลือดติดตามผล' },
+      addDaysToHealthReminderDate_(today, 7),
+      fixtureSource
+    );
+    assert_(getHealthReminderNotificationField_(reminder7d, today) === 'sent_7d_at', '7-day reminder eligible');
+    assert_(listActiveHealthReminders_().some(item => item.id === reminder7d.id), 'active reminder listed');
+
+    const cancelled = updateHealthReminder_(reminder7d.id, {
+      status: 'cancelled',
+      cancelled_at: new Date().toISOString()
+    });
+    assert_(cancelled.status === 'cancelled', 'cancel transition stored');
+
+    const reminder1d = createHealthReminder_(
+      { category: 'doctor_appointment', title: 'นัดพบแพทย์' },
+      addDaysToHealthReminderDate_(today, 1),
+      fixtureSource
+    );
+    assert_(getHealthReminderNotificationField_(reminder1d, today) === 'sent_1d_at', '1-day reminder eligible');
+
+    const completed = updateHealthReminder_(reminder1d.id, {
+      status: 'completed',
+      completed_at: new Date().toISOString()
+    });
+    assert_(completed.status === 'completed', 'complete transition stored');
+
+    const dueReminder = createHealthReminder_(
+      { category: 'follow_up', title: 'ติดตามสุขภาพ' },
+      today,
+      fixtureSource
+    );
+    assert_(getHealthReminderNotificationField_(dueReminder, today) === 'sent_due_at', 'due-date reminder eligible');
+    dueReminder.sent_due_at = new Date().toISOString();
+    assert_(
+      isEveningHealthReminderFollowupEligible_(dueReminder, today),
+      'one-time evening due follow-up eligible'
+    );
+    dueReminder.overdue_followup_sent_at = new Date().toISOString();
+    assert_(
+      !isEveningHealthReminderFollowupEligible_(dueReminder, today),
+      'sent evening due follow-up is not repeated'
+    );
+  } finally {
+    deleteFixtures_();
+    if (previousPending === null) {
+      props.deleteProperty(PENDING_HEALTH_REMINDER_PROPERTY);
+    } else {
+      props.setProperty(PENDING_HEALTH_REMINDER_PROPERTY, previousPending);
+    }
+  }
+}
+
 // ─── Trigger Setup (run once manually) ───────────────────────────────────────
 
 function setupTriggers() {
@@ -903,6 +1511,7 @@ function setupTriggers() {
       'morningCheckin',
       'eveningCheckin',
       'eveningCheckinReminder',
+      'healthReminderScan',
       'dailyContextUpdate'
     ].includes(t.getHandlerFunction()))
     .forEach(t => ScriptApp.deleteTrigger(t));
@@ -933,7 +1542,15 @@ function setupTriggers() {
     .inTimezone('Asia/Bangkok')
     .create();
 
-  Logger.log('setupTriggers: Phase A.1 check-ins set for 07:00, 20:00, and reminder around 21:30 Asia/Bangkok daily');
+  // Create daily 9am Bangkok health-reminder scan
+  ScriptApp.newTrigger('healthReminderScan')
+    .timeBased()
+    .atHour(9)
+    .everyDays(1)
+    .inTimezone('Asia/Bangkok')
+    .create();
+
+  Logger.log('setupTriggers: Phase A.2 set for check-ins 07:00, 20:00, reminder around 21:30, and health reminder scan 09:00 Asia/Bangkok daily');
 }
 
 // ─── History Helpers ──────────────────────────────────────────────────────────
