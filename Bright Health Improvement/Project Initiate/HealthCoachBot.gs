@@ -276,7 +276,14 @@ function callGemini_(userText, history) {
   };
 
   const parsed = fetchGeminiResponse_(requestBody, 'Gemini API error');
-  return readGeminiText_(parsed, 'Gemini API error');
+  return sanitizeLineText_(readGeminiText_(parsed, 'Gemini API error'));
+}
+
+function sanitizeLineText_(text) {
+  return String(text || '')
+    .replace(/\*\*/g, '')
+    .replace(/^#{1,6}\s*/gm, '')
+    .trim();
 }
 
 function runGeminiSmokeTest() {

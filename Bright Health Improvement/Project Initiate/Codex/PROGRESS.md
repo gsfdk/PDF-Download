@@ -8,10 +8,10 @@
 ## Active baton
 
 ```
-NEXT:      Manually run eveningCheckin(), reply in LINE, confirm the Sheet merge, then run
-           eveningCheckinReminder() and confirm it skips
-OWNER:     tan + either
-BLOCKERS:  Tan must run the live evening prompt/reply/reminder verification
+NEXT:      Phase A.1 soak — collect real Thai LINE replies for 3–5 days and spot-check daily_log;
+           keep Phase B dormant until the proactive capture inputs are trusted
+OWNER:     tan
+BLOCKERS:  none
 UPDATED:   2026-05-31 Asia/Bangkok
 ```
 
@@ -34,6 +34,7 @@ UPDATED:   2026-05-31 Asia/Bangkok
 | 2026-05-31 | tan + codex | Completed version 7 live LINE verification: normal Thai coaching reply returned, and connector readback confirmed one merged `daily_log` row with weight `74.5`, water `6`, exercise `30`, and the earlier mood note. | tan: begin the 3–5 day Phase A soak; spot-check captured values before Phase B activation. |
 | 2026-05-31 | codex | Added Phase A.1 proactive capture: morning prompts now end with questions, evening check-in runs at 20:00, one unanswered reminder runs around 21:30, response state is stored in Script Properties, and public `runProactiveCheckinSelfTest()` validates reminder eligibility without LINE sends. Trigger setup now removes the dormant Phase B cron and clears `USER_CONTEXT`. Redeployed the existing webhook in place as version 8. | tan + either: run editor verification, manually exercise the evening prompt/reply/reminder flow, then restart the 3–5 day soak. |
 | 2026-05-31 | tan | Ran `runProactiveCheckinSelfTest()` successfully and ran `setupTriggers()` successfully. Phase A.1 triggers are installed for 07:00, 20:00, and reminder around 21:30 Asia/Bangkok daily. | tan + either: manually run the evening prompt/reply/reminder flow and confirm the Sheet merge before restarting the soak. |
+| 2026-05-31 | tan + codex | Completed the live evening flow: check-in prompt arrived, natural Thai reply produced a normal coaching response, connector readback confirmed the merged Sheet row, and `eveningCheckinReminder()` correctly skipped after the response. Added LINE plaintext sanitization after the live reply exposed visible `**` markers, then redeployed the webhook in place as version 9. | tan: restart the 3–5 day Phase A.1 soak and spot-check natural Thai replies before Phase B activation. |
 
 ---
 
@@ -41,7 +42,7 @@ UPDATED:   2026-05-31 Asia/Bangkok
 
 - [x] Bot core: webhook + Gemini + LINE Reply/Push + Google Doc log + rolling history
 - [x] Deployed v1 to Apps Script (May 28 2026)
-- [ ] **CURRENT:** Phase A.1 — version 8 deployed; waiting on editor and live LINE verification before restarting the soak
+- [ ] **CURRENT:** Phase A.1 soak — version 9 live-verified; collect and spot-check proactive Thai LINE replies for 3–5 days
 - [ ] **NEXT:** Phase B — activate nightly summarizer → `USER_CONTEXT` injection after the soak
 - [ ] Weekly progress chart from Sheet → LINE image
 - [ ] Doctor appointment reminders
@@ -62,6 +63,7 @@ UPDATED:   2026-05-31 Asia/Bangkok
 | 2026-05-30 | `source_message` column added to schema | Every number traceable back to the message that produced it |
 | 2026-05-31 | Stable `gemini-2.5-flash-lite` for LINE replies and extraction | Stable model with higher free-tier throughput is a better fit than preview quality for short Thai coaching messages |
 | 2026-05-31 | Proactive Phase A.1 check-ins at 07:00, 20:00, and one unanswered reminder around 21:30 | Active prompts collect better soak data without repeatedly chasing the user or consuming Gemini quota |
+| 2026-05-31 | Sanitize Gemini reply text before sending to LINE | Prompt instructions reduce Markdown but cannot guarantee plain text; strip common markers at the channel boundary |
 
 ---
 
