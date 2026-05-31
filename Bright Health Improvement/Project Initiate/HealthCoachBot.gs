@@ -1,6 +1,6 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const GEMINI_MODEL       = 'gemini-3-flash-preview';
+const GEMINI_MODEL       = 'gemini-2.5-flash-lite';
 const GEMINI_API_BASE    = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const MAX_HISTORY_TURNS  = 8;
 const LINE_REPLY_API_URL = 'https://api.line.me/v2/bot/message/reply';
@@ -22,7 +22,7 @@ const SANITY_BOUNDS = {
 
 const CONTEXT_WINDOW_DAYS = 7;
 const GEMINI_MAX_RETRIES = 1;
-const GEMINI_MAX_RETRY_DELAY_MS = 50000;
+const GEMINI_MAX_RETRY_DELAY_MS = 5000;
 const SOURCE_MSG_MAX_LEN  = 200;
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
@@ -155,22 +155,82 @@ function parseRetryDelayMs_(responseText) {
   return Math.min(retryMs, GEMINI_MAX_RETRY_DELAY_MS);
 }
 
+function recordGeminiError_(httpStatus, category) {
+  const diagnostic = {
+    timestamp: new Date().toISOString(),
+    model: GEMINI_MODEL,
+    http_status: httpStatus === null ? '' : httpStatus,
+    category: category
+  };
+
+  PropertiesService.getScriptProperties()
+    .setProperty('LAST_GEMINI_ERROR', JSON.stringify(diagnostic));
+  Logger.log(
+    'Gemini diagnostic: model=' + diagnostic.model +
+    ' status=' + (diagnostic.http_status || 'none') +
+    ' category=' + diagnostic.category
+  );
+}
+
+function classifyGeminiError_(responseCode) {
+  if (responseCode === 400) return 'BAD_REQUEST';
+  if (responseCode === 401 || responseCode === 403) return 'AUTH_ERROR';
+  if (responseCode === 404) return 'MODEL_NOT_FOUND';
+  if (responseCode === 429) return 'RATE_LIMIT';
+  if (responseCode >= 500) return 'PROVIDER_ERROR';
+  return 'HTTP_ERROR';
+}
+
+function readGeminiText_(responseBody, errorPrefix) {
+  const text = responseBody &&
+    responseBody.candidates &&
+    responseBody.candidates[0] &&
+    responseBody.candidates[0].content &&
+    responseBody.candidates[0].content.parts &&
+    responseBody.candidates[0].content.parts[0] &&
+    responseBody.candidates[0].content.parts[0].text;
+
+  if (typeof text !== 'string' || !text.trim()) {
+    recordGeminiError_(200, 'MISSING_TEXT');
+    throw new Error(errorPrefix + ': missing candidate text');
+  }
+
+  return text.trim();
+}
+
 function fetchGeminiResponse_(requestBody, errorPrefix) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!apiKey) {
+    recordGeminiError_(null, 'MISSING_API_KEY');
+    throw new Error(errorPrefix + ': GEMINI_API_KEY is not set');
+  }
+
   const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent?key=' + apiKey;
 
   for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
-    const response = UrlFetchApp.fetch(url, {
-      method: 'POST',
-      contentType: 'application/json',
-      payload: JSON.stringify(requestBody),
-      muteHttpExceptions: true
-    });
+    let response;
+    try {
+      response = UrlFetchApp.fetch(url, {
+        method: 'POST',
+        contentType: 'application/json',
+        payload: JSON.stringify(requestBody),
+        muteHttpExceptions: true
+      });
+    } catch (err) {
+      recordGeminiError_(null, 'FETCH_EXCEPTION');
+      throw new Error(errorPrefix + ': fetch failed');
+    }
+
     const responseCode = response.getResponseCode();
     const responseText = response.getContentText();
 
     if (responseCode === 200) {
-      return JSON.parse(responseText);
+      try {
+        return JSON.parse(responseText);
+      } catch (err) {
+        recordGeminiError_(responseCode, 'INVALID_JSON_RESPONSE');
+        throw new Error(errorPrefix + ': invalid JSON response');
+      }
     }
 
     if (responseCode === 429 && attempt < GEMINI_MAX_RETRIES) {
@@ -180,9 +240,12 @@ function fetchGeminiResponse_(requestBody, errorPrefix) {
       continue;
     }
 
-    throw new Error(errorPrefix + ' ' + responseCode + ': ' + responseText);
+    const category = classifyGeminiError_(responseCode);
+    recordGeminiError_(responseCode, category);
+    throw new Error(errorPrefix + ' ' + responseCode + ': ' + category);
   }
 
+  recordGeminiError_(null, 'EXHAUSTED_RETRIES');
   throw new Error(errorPrefix + ' exhausted retries');
 }
 
@@ -205,7 +268,23 @@ function callGemini_(userText, history) {
   };
 
   const parsed = fetchGeminiResponse_(requestBody, 'Gemini API error');
-  return parsed.candidates[0].content.parts[0].text.trim();
+  return readGeminiText_(parsed, 'Gemini API error');
+}
+
+function runGeminiSmokeTest() {
+  const responseBody = fetchGeminiResponse_({
+    contents: [{
+      role: 'user',
+      parts: [{ text: 'ตอบคำว่า OK เท่านั้น' }]
+    }],
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 20
+    }
+  }, 'Gemini smoke test error');
+  const text = readGeminiText_(responseBody, 'Gemini smoke test error');
+
+  Logger.log('runGeminiSmokeTest PASS: model=' + GEMINI_MODEL + ' response=' + text);
 }
 
 // ─── LINE Messaging ───────────────────────────────────────────────────────────
@@ -392,7 +471,14 @@ function extractHealthData_(userText) {
         responseMimeType: 'application/json'
       }
     }, 'Gemini extraction error');
-    const extracted = JSON.parse(responseBody.candidates[0].content.parts[0].text);
+    const rawText = readGeminiText_(responseBody, 'Gemini extraction error');
+    let extracted;
+    try {
+      extracted = JSON.parse(rawText);
+    } catch (err) {
+      recordGeminiError_(200, 'INVALID_STRUCTURED_OUTPUT');
+      throw new Error('Gemini extraction error: invalid structured output');
+    }
     return sanitizeHealthData_(extracted);
   } catch (err) {
     Logger.log('extractHealthData_ error: ' + err.message);
@@ -510,7 +596,7 @@ function summarizeContext_() {
       maxOutputTokens: 250
     }
   }, 'Gemini summary error');
-  const summary = responseBody.candidates[0].content.parts[0].text.trim();
+  const summary = readGeminiText_(responseBody, 'Gemini summary error');
   props.setProperty('USER_CONTEXT', summary);
   return summary;
 }
