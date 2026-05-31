@@ -8,7 +8,7 @@
 ## Active baton
 
 ```
-NEXT:      Phase A verification — rerun public runSelfTest() on version 4, then send one
+NEXT:      Phase A verification — rerun public runSelfTest() on version 5, then send one
            real Thai LINE message and verify the daily_log row
 OWNER:     either
 BLOCKERS:  none
@@ -27,6 +27,7 @@ UPDATED:   2026-05-30 Asia/Bangkok
 | 2026-05-30 | codex | Added public editor wrappers `setupSheet()` and `runSelfTest()` because Apps Script hides trailing-underscore helper functions from the Run dropdown. Redeployed the existing webhook in place as version 3. | tan + either: add SHEET_ID, refresh editor, run `setupSheet` + `runSelfTest`, and verify one LINE message. |
 | 2026-05-30 | codex | Tan configured `SHEET_ID`, approved Sheets OAuth, and ran public `setupSheet()` successfully. Connector readback confirmed `daily_log!A1:I1` headers. First `runSelfTest()` reached Gemini extraction but failed on a transient Gemini quota/retry response before Sheet upsert assertions. | either: rerun `runSelfTest()` after quota clears; if repeatable, add bounded retry handling for Gemini 429 responses; then verify one real LINE message. |
 | 2026-05-30 | codex | Added bounded Gemini 429 retry handling and a narrow regex extraction fallback for Phase A capture/self-test resilience under free-tier throttling. Redeployed the existing webhook in place as version 4. | either: rerun `runSelfTest()` on version 4, then verify one real LINE message lands in `daily_log`. |
+| 2026-05-31 | codex | Fixed the regex fallback to reuse the same `SANITY_BOUNDS` sanitizer as Gemini JSON output after `runSelfTest()` correctly exposed that fallback accepted absurd weight `750`. Redeployed the existing webhook in place as version 5. | either: rerun `runSelfTest()` on version 5, then verify one real LINE message lands in `daily_log`. |
 
 ---
 
@@ -34,7 +35,7 @@ UPDATED:   2026-05-30 Asia/Bangkok
 
 - [x] Bot core: webhook + Gemini + LINE Reply/Push + Google Doc log + rolling history
 - [x] Deployed v1 to Apps Script (May 28 2026)
-- [ ] **CURRENT:** Phase A — version 4 deployed and Sheet activated; waiting on final self-test + one real LINE verification
+- [ ] **CURRENT:** Phase A — version 5 deployed and Sheet activated; waiting on final self-test + one real LINE verification
 - [ ] **NEXT:** Phase B — nightly summarizer → `USER_CONTEXT` injection
 - [ ] Weekly progress chart from Sheet → LINE image
 - [ ] Doctor appointment reminders

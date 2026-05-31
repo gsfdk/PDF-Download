@@ -350,6 +350,30 @@ function fallbackExtractHealthData_(userText) {
   return fallback;
 }
 
+function sanitizeHealthData_(extracted) {
+  const cleaned = {};
+
+  Object.keys(SANITY_BOUNDS).forEach(key => {
+    if (!Object.prototype.hasOwnProperty.call(extracted, key)) return;
+
+    const value = Number(extracted[key]);
+    const bounds = SANITY_BOUNDS[key];
+
+    if (!Number.isFinite(value) || value < bounds[0] || value > bounds[1]) {
+      Logger.log('extractHealthData_: dropped out-of-range ' + key + '=' + extracted[key]);
+      return;
+    }
+
+    cleaned[key] = value;
+  });
+
+  if (typeof extracted.note === 'string' && extracted.note.trim()) {
+    cleaned.note = extracted.note.trim();
+  }
+
+  return cleaned;
+}
+
 function extractHealthData_(userText) {
   const prompt = [
     'ดึงเฉพาะข้อมูลสุขภาพที่ผู้ใช้ระบุจริงจากข้อความด้านล่าง',
@@ -369,33 +393,13 @@ function extractHealthData_(userText) {
       }
     }, 'Gemini extraction error');
     const extracted = JSON.parse(responseBody.candidates[0].content.parts[0].text);
-    const cleaned = {};
-
-    Object.keys(SANITY_BOUNDS).forEach(key => {
-      if (!Object.prototype.hasOwnProperty.call(extracted, key)) return;
-
-      const value = Number(extracted[key]);
-      const bounds = SANITY_BOUNDS[key];
-
-      if (!Number.isFinite(value) || value < bounds[0] || value > bounds[1]) {
-        Logger.log('extractHealthData_: dropped out-of-range ' + key + '=' + extracted[key]);
-        return;
-      }
-
-      cleaned[key] = value;
-    });
-
-    if (typeof extracted.note === 'string' && extracted.note.trim()) {
-      cleaned.note = extracted.note.trim();
-    }
-
-    return cleaned;
+    return sanitizeHealthData_(extracted);
   } catch (err) {
     Logger.log('extractHealthData_ error: ' + err.message);
     const fallback = fallbackExtractHealthData_(userText);
     if (Object.keys(fallback).length > 0) {
       Logger.log('extractHealthData_: using regex fallback');
-      return fallback;
+      return sanitizeHealthData_(fallback);
     }
     return {};
   }
