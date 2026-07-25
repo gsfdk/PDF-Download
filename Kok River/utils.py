@@ -29,10 +29,23 @@ from __future__ import annotations
 
 import datetime as _dt
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+# Every date shown in this app is a date in Thailand, so it must not be derived
+# from the server clock. Streamlit Community Cloud runs UTC, which is 7 hours
+# behind ICT: between 00:00 and 07:00 Thai time a UTC server still reports
+# yesterday, and the dashboard's "week starting" labels would silently sit a day
+# off for exactly the users this tool is for.
+PROJECT_TZ = ZoneInfo("Asia/Bangkok")
+
+
+def today_in_thailand() -> _dt.date:
+    """Current date in Asia/Bangkok, independent of the server's timezone."""
+    return _dt.datetime.now(PROJECT_TZ).date()
 
 # ---------------------------------------------------------------------------
 # Reference data
@@ -408,8 +421,8 @@ HOTLINE_DISCLAIMER = (
 # ---------------------------------------------------------------------------
 
 # ttl rather than a permanent cache: generate_mock_symptom_trend() is anchored on
-# date.today(), so an indefinitely cached result would freeze the date labels on a
-# long-running server.
+# today_in_thailand(), so an indefinitely cached result would freeze the date labels
+# on a long-running server.
 _MOCK_CACHE_TTL_SECONDS = 3600
 
 
@@ -453,7 +466,7 @@ def generate_mock_symptom_trend(weeks: int = 12) -> pd.DataFrame:
         raise ValueError(f"weeks must be >= 1, got {weeks}")
 
     rng = np.random.default_rng(seed=7)
-    today = _dt.date.today()
+    today = today_in_thailand()
     start = today - _dt.timedelta(weeks=weeks - 1)
     dates = [start + _dt.timedelta(weeks=i) for i in range(weeks)]
 

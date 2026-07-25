@@ -182,3 +182,32 @@ def test_district_choice_does_not_change_the_score():
     would assert a ranking no public Kok basin data supports."""
     assert utils.LOCATION_BASELINE_SCORE == 5
     assert all("weight" not in meta for meta in utils.DISTRICTS.values())
+
+
+# ---------------------------------------------------------------------------
+# Dates
+# ---------------------------------------------------------------------------
+
+def test_dates_come_from_thailand_not_the_server_clock(monkeypatch):
+    """Streamlit Cloud runs UTC, 7 hours behind ICT. Between 00:00 and 07:00 Thai
+    time a server-clock date is yesterday's, so every 'week starting' label on the
+    dashboard would sit a day off for the users this tool exists for."""
+    import datetime as dt
+
+    # 02:00 in Bangkok on 26 Jul == 19:00 UTC on 25 Jul: the dates disagree.
+    instant = dt.datetime(2026, 7, 26, 2, 0, tzinfo=utils.PROJECT_TZ)
+
+    class FrozenDatetime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(utils._dt, "datetime", FrozenDatetime)
+
+    assert utils.today_in_thailand() == dt.date(2026, 7, 26)
+    assert instant.astimezone(dt.timezone.utc).date() == dt.date(2026, 7, 25)
+
+
+def test_trend_ends_on_todays_thai_date():
+    trend = utils.generate_mock_symptom_trend.__wrapped__(weeks=4)
+    assert trend.iloc[-1, 0] == utils.today_in_thailand()

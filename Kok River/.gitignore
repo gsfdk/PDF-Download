@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+
+# Never commit deployment secrets. The app needs none today (no API keys), but a
+# future secrets.toml must not reach a public repo.
+.streamlit/secrets.toml
