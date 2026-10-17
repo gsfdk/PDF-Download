@@ -1,0 +1,13 @@
+# Theme is pinned so the deployed app looks the same for every reviewer rather
+# than inheriting whatever default their Streamlit session picks. Colours match
+# the risk palette used in app.py and the charts: red #ef4444 high,
+# amber #f59e0b medium, green #22c55e low.
+[theme]
+base = "light"
+primaryColor = "#0ea5e9"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f1f5f9"
+textColor = "#0f172a"
+
+[browser]
+gatherUsageStats = false
