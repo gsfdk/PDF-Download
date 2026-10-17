@@ -1,0 +1,8 @@
+# Floors reflect the APIs the code actually calls:
+#   streamlit >= 1.49 -> width="stretch" on plotly_chart / dataframe / form_submit_button
+#   plotly    >= 5.24 -> px.scatter_map + layout map_style (MapLibre; replaced scatter_mapbox)
+# Lower versions install cleanly and then fail at runtime.
+streamlit>=1.49.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.24.0
